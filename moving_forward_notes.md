@@ -3145,6 +3145,20 @@ User re-ran the same two-tone IMD test with the pair pushed up to 700/1900Hz (fr
 
 **Not yet done**: no direct identification of what specifically sits near +2700Hz in the 700/1700Hz configuration (candidates not checked: a PWM/switching-related spur, an ADC/DDS clock artifact, or simply elevated broadband noise that happens to be locally worse in that narrow band) - the conclusion here is "it's not mainly the transmitter's own IMD3," not a specific identified noise source. No re-measurement of the 700/1700Hz pair to see if the +2700Hz reading is repeatable/consistent run-to-run (which would help distinguish a stable discrete spur from transient interference).
 
+## 2026-09-29, later still: ADC anti-alias filter confirmed float (not integer) throughout; likely real mechanism for the "higher HF-side noise floor at low signal" observation is undithered 12-bit ADC quantization instead
+
+User asked, in the context of the IMD-asymmetry chase: "Is the adc audio filter using integer maths or floats - relates to seeing higher noise floor on HF side when noise level is low."
+
+**Answered directly, verified against the actual call path, not just the header comments**: every currently-active ADC LPF mode (Butterworth/Chebyshev, 2nd/4th/6th/8th order, including today's Chebyshev-8) runs in 32-bit float, Direct Form II Transposed - `adc_capture_read_next_sample()` (`adc_capture.cpp:389-419`) casts the raw 12-bit ADC code to float immediately (`float raw = (float)s_adc_fifo[tail];`), then calls `ssb_biquad4/6/8_process()` (`ssb_adc_filter.c`), and the fractional-resampler linear interpolation right after it is float too. No integer math anywhere in the live filter/resample path.
+
+**Found, not previously flagged: `ssb_adc_filter.h` also defines a Q15 fixed-point/integer biquad (`ssb_biquad_fixed_t`/`ssb_biquad_fixed_process()`), explicitly built to be ISR-safe** (float ops aren't legal in an Xtensa ISR - would trip a CoprocessorException). Grepped the whole codebase: it is never called from anywhere in the actual application (`adc_capture.cpp`, `ssb_mic_test.ino`, `ssb_dsp.c` all use the float variants only). This looks like dead code left over from an earlier plan to run the filter directly in the ADC's `on_conv_done` ISR callback, superseded once the filter ended up running from `dsp_task` instead. Not deleted since it costs nothing sitting unused, but worth knowing it's there and not live.
+
+**Given this, filter-induced integer quantization noise is ruled out** - float32's own quantization is around -140dB relative to full scale, far below anything that could show up as a measurable/audible noise floor.
+
+**More plausible real mechanism, offered as a testable hypothesis, not yet confirmed**: the one genuine integer step in this whole chain is the ADC hardware itself (`ADC_BITWIDTH_12`, 4096 raw codes) - a physical hardware limit, not something filter math choices touch. An ADC quantizing a low-amplitude signal WITHOUT dither doesn't produce flat white noise - it produces a correlated staircase whose distortion energy skews toward higher frequencies/harmonics, which is the textbook reason professional audio ADCs add dither ahead of the quantizer (converts HF-heavy quantization distortion into flat, benign noise). Checked: there is no dither anywhere on this project's ADC/mic input path - the only dither in the codebase is the synthetic two-tone generator's frequency dither (`'Q'`, `test_signals.cpp`), which is unrelated (audio-domain frequency dither on a test tone, not ADC-domain amplitude dither).
+
+**Not yet done**: no bench test of adding a small dither ahead of the ADC sampling to see whether it changes the reported HF-side noise floor at low signal levels - this is a real, cheap, well-precedented thing to try, not yet tried. Also unconfirmed: whether the user's "HF side" refers to the RF high-side/low-side terminology from today's IMD discussion, or the high end of the audio passband instead - flagged to the user directly, answer not yet received.
+
 ## Open items carried from earlier sessions, still unresolved
 
 - `MAX_FREQ_DEV_HZ` currently `20000.0f` (config.h:405) - a widened

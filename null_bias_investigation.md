@@ -5493,6 +5493,14 @@ Retracts most of this file's immediately preceding entry. User re-ran the two-to
 
 **Net position, updated**: no evidence connecting this project's two-tone IMD asymmetry to the null-crossing phase-bias mechanism, in either direction - the data point that prompted the question turned out to be measuring something else almost entirely. If this connection is worth investigating further, it needs a deliberately-designed test (e.g., comparing the small residual asymmetry across settings that specifically change null depth), not an incidental read of an IMD sweep taken for a different purpose.
 
+## 2026-09-29, later still: ADC filter confirmed float, not integer - relevant here only as a cross-reference to this file's own dither history
+
+Logged in full in moving_forward_notes.md's matching entry; noted here only because this file has the project's most detailed dither history (the `'Q'` two-tone frequency dither work, 2026-09-11/12/17) and the new question raised a DIFFERENT kind of dither - ADC amplitude dither, not test-tone frequency dither - worth keeping the two distinct.
+
+Confirmed the live ADC anti-alias filter (Butterworth/Chebyshev, all orders) is 32-bit float throughout, so filter arithmetic isn't a source of the "higher HF-side noise floor at low signal" the user asked about. The more plausible mechanism is undithered 12-bit ADC quantization producing HF-skewed distortion rather than flat noise at low signal levels - a genuinely different phenomenon from anything this file's `'Q'` dither work addressed (that dither randomizes a SYNTHETIC test tone's frequency to decorrelate null-crossing sample-grid alignment; the new hypothesis is about ANALOG-signal AMPLITUDE dither ahead of the physical ADC quantizer, standard audio-engineering practice, unrelated to null-crossing phase bias at all). No overlap or conflict between the two - just flagging so a future session doesn't conflate "we already tried dither and it didn't help" (true for `'Q'`) with this new, unrelated proposal.
+
+**Not yet done**: no ADC-input dither has ever been implemented or tested in this project - only the test generator's frequency dither exists today.
+
 ## Where to resume
 
 The null-crossing bias itself is well-characterized and, per the "likely
