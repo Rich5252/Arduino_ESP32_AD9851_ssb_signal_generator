@@ -1,3 +1,16 @@
+# SSB prime mover for ham radio SDR transceiver.
+
+This project was developed to add SSB to my SDR transceiver system. The 
+objective was to maximise the capabilities of the ESP32-S3 and AD9851 DDS with 
+minimal additional circuitry while creating a high performance SSB signal
+generator.
+
+This repo is the project development phase that will be used to create the 
+final add-in to my TXLink controller.
+
+I make no apology for using Claude AI to assist here with the benefit of
+detailed engineering notes and reports as things evolved.
+
 # Polar EER SSB Exciter (ESP32-S3 + AD9851)
 
 An SSB/EER (Envelope Elimination and Restoration) signal generator built on an
