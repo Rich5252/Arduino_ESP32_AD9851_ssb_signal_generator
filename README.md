@@ -11,6 +11,8 @@ final add-in to my TXLink controller.
 I make no apology for using Claude AI to assist here with the benefit of
 detailed engineering notes and reports as things evolved.
 
+73, G4AHN
+
 # Polar EER SSB Exciter (ESP32-S3 + AD9851)
 
 An SSB/EER (Envelope Elimination and Restoration) signal generator built on an
