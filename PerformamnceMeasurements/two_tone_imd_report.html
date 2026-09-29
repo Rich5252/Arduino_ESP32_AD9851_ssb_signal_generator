@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Two-Tone IMD Test</title>
+<meta name="description" content="Two-tone IMD sweeps at 700/1700Hz and 700/1900Hz, comp on vs comp off, 14175kHz, 2026-09-29">
+<style>
+  :root {
+    color-scheme: light;
+    --surface-1:      #fcfcfb;
+    --page:           #f9f9f7;
+    --text-primary:   #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted:     #898781;
+    --grid:           #e1e0d9;
+    --axis:           #c3c2b7;
+    --border:         rgba(11,11,11,0.10);
+    --series-on:      #2a78d6;   /* comp ON - blue, slot 1 */
+    --series-off:     #eb6834;   /* comp OFF - orange, slot 2 */
+    --tone-marker:    #52514e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --surface-1:      #1a1a19;
+      --page:           #0d0d0d;
+      --text-primary:   #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted:     #898781;
+      --grid:           #2c2c2a;
+      --axis:           #383835;
+      --border:         rgba(255,255,255,0.10);
+      --series-on:      #3987e5;
+      --series-off:     #d95926;
+      --tone-marker:    #c3c2b7;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface-1:      #1a1a19;
+    --page:           #0d0d0d;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #898781;
+    --grid:           #2c2c2a;
+    --axis:           #383835;
+    --border:         rgba(255,255,255,0.10);
+    --series-on:      #3987e5;
+    --series-off:     #d95926;
+    --tone-marker:    #c3c2b7;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--text-primary);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 28px 16px 64px;
+  }
+  h1 {
+    font-size: 22px;
+    margin: 0 0 4px;
+    letter-spacing: -0.01em;
+  }
+  .subtitle {
+    color: var(--text-secondary);
+    font-size: 14px;
+    margin: 0 0 24px;
+  }
+  .card {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+  .card h2 {
+    font-size: 15px;
+    margin: 0 0 12px;
+    color: var(--text-primary);
+  }
+  p {
+    font-size: 14px;
+    line-height: 1.6;
+    color: var(--text-secondary);
+    margin: 0 0 12px;
+  }
+  p:last-child { margin-bottom: 0; }
+  .stat-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 14px;
+    margin-bottom: 20px;
+  }
+  .stat-tile {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+  }
+  .stat-label {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+  }
+  .stat-value {
+    font-size: 26px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .stat-note {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 4px;
+  }
+  .legend {
+    display: flex;
+    gap: 18px;
+    flex-wrap: wrap;
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-bottom: 10px;
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .swatch { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
+  .swatch-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; border: 2px solid var(--surface-1); }
+  svg { display: block; width: 100%; height: auto; }
+  .axis-label { font-size: 11px; fill: var(--text-muted); }
+  .grid-line { stroke: var(--grid); stroke-width: 1; }
+  .axis-line { stroke: var(--axis); stroke-width: 1; }
+  .pt { cursor: pointer; }
+  .pt:hover circle { r: 6; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12.5px;
+    font-variant-numeric: tabular-nums;
+  }
+  th, td {
+    text-align: right;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--grid);
+    white-space: nowrap;
+  }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--text-muted); font-weight: 500; }
+  td.hz { color: var(--text-secondary); }
+  details summary {
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-top: 4px;
+  }
+  code {
+    font-size: 12px;
+    background: var(--grid);
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+  .settings-table { table-layout: fixed; }
+  .settings-table td, .settings-table th { text-align: left; border-bottom: 1px solid var(--grid); white-space: normal; }
+  .settings-table td:first-child, .settings-table th:first-child { width: 38%; color: var(--text-muted); }
+  .settings-table td:last-child, .settings-table th:last-child { text-align: left; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Two-tone IMD test &mdash; 14175&nbsp;kHz</h1>
+  <p class="subtitle">Speaker-into-mic two-tone drive, comp on vs comp off, two tone pairs (700/1700Hz and 700/1900Hz), captured 2026-09-29 via SDRuno.</p>
+
+  <div class="card" style="border-color: var(--series-on);">
+    <h2>Update: the 9.3&nbsp;dB asymmetry was mostly a noise-contaminated measurement bin, not the transmitter</h2>
+    <p>Re-running the test with the tone pair pushed up to 700/1900&nbsp;Hz &mdash; which moves the high-side third-order product from +2700&nbsp;Hz up to +3100&nbsp;Hz &mdash; collapses the asymmetry from ~9.3&nbsp;dB down to roughly 0.9&ndash;2.7&nbsp;dB. That means the original +2700&nbsp;Hz reading was largely picking up background noise sitting at that specific frequency in the 250&nbsp;Hz measurement window, not a genuine third-order product from the transmitter. Moving off that frequency reveals the real figure, and it's a good one: roughly &minus;32 to &minus;35&nbsp;dBc on both sides, with only a small, unremarkable residual asymmetry &mdash; the "asymmetry we've always seen," per your note, but nowhere near the scale the 700/1700&nbsp;Hz run suggested. The earlier report's attribution of that 9.3&nbsp;dB gap to the project's known <code>relative_delay_samples</code>-sensitive Low/High 3rd-IMD effect is superseded by this finding &mdash; that mechanism may still contribute a dB or two (matching the small residual seen here), but it was not the dominant cause of the original reading.</p>
+  </div>
+
+  <div class="stat-row">
+    <div class="stat-tile">
+      <div class="stat-label">700/1700Hz high side (+2700Hz)</div>
+      <div class="stat-value">&minus;27.2 dBc</div>
+      <div class="stat-note">now understood to be noise-contaminated, not a true IMD3 reading</div>
+    </div>
+    <div class="stat-tile">
+      <div class="stat-label">700/1900Hz high side (+3100Hz)</div>
+      <div class="stat-value">&minus;33.4 dBc</div>
+      <div class="stat-note">&minus;34.411 comp on / &minus;32.332 comp off &mdash; the real figure</div>
+    </div>
+    <div class="stat-tile">
+      <div class="stat-label">Asymmetry, before &rarr; after</div>
+      <div class="stat-value">~9.3 &rarr; ~1.8 dB</div>
+      <div class="stat-note">collapses once the high-side product moves off the noisy bin</div>
+    </div>
+    <div class="stat-tile">
+      <div class="stat-label">Two-tone drive balance</div>
+      <div class="stat-value">&le;0.7 dB</div>
+      <div class="stat-note">reference-tone levels, both pairs, both conditions</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Spectrum shape &mdash; 700/1700&nbsp;Hz (original run)</h2>
+    <div class="legend" id="legend1"></div>
+    <svg id="chart1" viewBox="0 0 820 380" role="img" aria-label="Two-tone IMD spectrum at 700/1700Hz, comp on vs comp off"></svg>
+    <p style="margin-top:10px;">Both test tones plotted at 0&nbsp;dBc for reference (grey diamonds); the comp-on/comp-off lines trace every measured IMD product at its dB level relative to the nearer tone. Hover a point for its exact reading. The +2700Hz spike is the reading now understood to be noise-contaminated &mdash; see below.</p>
+  </div>
+
+  <div class="card">
+    <h2>Spectrum shape &mdash; 700/1900&nbsp;Hz (re-test, tone pair shifted up)</h2>
+    <div class="legend" id="legend2"></div>
+    <svg id="chart2" viewBox="0 0 820 380" role="img" aria-label="Two-tone IMD spectrum at 700/1900Hz, comp on vs comp off"></svg>
+    <p style="margin-top:10px;">Same test, tones moved to 700/1900Hz so the near-in products land at &minus;500/+3100Hz instead of &minus;300/+2700Hz &mdash; clear of whatever was elevating the +2700Hz bin above. Note the much flatter, more symmetric near-in shape and the better absolute floor.</p>
+  </div>
+
+  <div class="card">
+    <h2>What this shows</h2>
+    <p>In both tone pairs the two drive tones sit within 0.7&nbsp;dB of each other (0.02&ndash;0.66&nbsp;dB across the four runs), so neither comb is an artifact of uneven drive &mdash; it reflects what the transmitter and measurement together actually produced. On the original 700/1700Hz pair, the closest-in high-side product (2f2&minus;f1, +2700Hz) read &minus;27.2 to &minus;27.6&nbsp;dBc against a low-side (2f1&minus;f2, &minus;300Hz) of &minus;36.7&nbsp;dBc &mdash; a ~9.3&nbsp;dB gap that looked like a real, structural transmitter asymmetry. Shifting the pair to 700/1900Hz moves those two products to &minus;500/+3100Hz and the gap nearly disappears: &minus;35.1 to &minus;35.3&nbsp;dBc low side vs &minus;32.3 to &minus;34.4&nbsp;dBc high side, a residual 0.9&ndash;2.7&nbsp;dB. Since moving the measurement frequency is the only thing that changed, the simplest explanation is the right one: something (most plausibly a modest, narrowband noise/spur contribution, not a broad noise floor) was elevating readings specifically near +2700Hz, and the 700/1700Hz run's "IMD3" figure was measuring that contribution as much as the transmitter's own third-order product.</p>
+    <p>The 700/1900Hz re-test's near-in high side isn't perfectly clean either &mdash; both +3100Hz (3rd order, 2f2&minus;f1) and +4300Hz (5th order, 3f2&minus;2f1) read within 2&nbsp;dB of each other (&minus;34.4/&minus;32.7&nbsp;dBc comp on, &minus;32.3/&minus;34.6&nbsp;dBc comp off), rather than the 5th-order term dropping cleanly below the 3rd as a simple nonlinearity would suggest. That's a smaller, secondary wrinkle worth another look sometime, not the headline finding here.</p>
+    <p>Beyond the near-in pair, both combs in both tests roll off in a fairly clean, monotonic ladder spaced at the two-tone difference frequency (1&nbsp;kHz for the 700/1700Hz pair, 1.2&nbsp;kHz for 700/1900Hz) &mdash; typical spectral regrowth for this EER/polar architecture. The 700/1900Hz pair reaches noticeably further down by its far rungs (&minus;59 to &minus;61&nbsp;dBc by the 9th/10th product) than the 700/1700Hz pair did (&minus;56 to &minus;58&nbsp;dBc) &mdash; consistent with the absolute levels being "very good," as you put it, once the near-in reading isn't being inflated by whatever sits near 2700Hz.</p>
+    <p>Comparing comp on against comp off at matched envelope peak, in both tone pairs the two conditions track each other closely &mdash; most products differ by well under a dB to a couple of dB, with no consistent sign either way. That still reads as the compressor not meaningfully costing (or buying) linearity at this operating point, in both tests.</p>
+  </div>
+
+  <div class="card">
+    <h2>Note on the uploaded capture</h2>
+    <p>The uploaded WAV (700/1700Hz run only &mdash; no capture was uploaded for the 700/1900Hz re-test) is a raw SDRuno IQ recording (stereo 16-bit, 388.888&nbsp;kHz sample rate, 4.45&nbsp;s, centred on 14175&nbsp;kHz) with a steady, non-transient envelope throughout &mdash; consistent with a single steady-state capture of one of the two conditions, not a combined recording of both. A quick independent FFT located the two test tones close to their nominal 700/1700&nbsp;Hz offsets and confirmed the general two-tone structure, but a naive whole-file transform over the full recording bandwidth also picks up other energy (band activity on a shared 20m allocation, SDR passband-edge artifacts) that a dedicated, targeted measurement tool correctly excludes. This report is built directly from the numbers your own test harness reported for both tone pairs, with the WAV kept as the archived reference capture for the first run rather than as a second quantitative source &mdash; and its existence doesn't change the noise-contamination finding above, which comes from comparing the two harness-reported sweeps directly.</p>
+  </div>
+
+  <div class="card">
+    <h2>Settings in effect</h2>
+    <p style="margin-top:0;">As supplied with the original 700/1700Hz run; assumed unchanged for the 700/1900Hz re-test (only the test-tone frequencies were stated as different).</p>
+    <table class="settings-table">
+      <tbody>
+        <tr><td>Audio source</td><td>Mic (speaker acoustically coupled into mic input)</td></tr>
+        <tr><td>ADC anti-alias filter</td><td>Chebyshev, 8th order</td></tr>
+        <tr><td>Envelope pre-distortion LUT</td><td>enabled</td></tr>
+        <tr><td>Envelope interpolation</td><td>off (Catmull-Rom curve selected but inactive)</td></tr>
+        <tr><td>Envelope AmpEQ (both shelves)</td><td>off</td></tr>
+        <tr><td>Group-delay EQ (gdeq)</td><td>default variant</td></tr>
+        <tr><td>Envelope ALC</td><td>enabled</td></tr>
+        <tr><td>Envelope Soft-Limit</td><td>enabled</td></tr>
+        <tr><td>Mic gain</td><td>+34.0 dB</td></tr>
+        <tr><td>Compressor level</td><td>6 (toggled on/off live for this A/B; both runs matched to the same ~10%-below-full-scale envelope peak)</td></tr>
+        <tr><td>Mic Squelch</td><td>enabled, threshold 0.0160</td></tr>
+        <tr><td>Freq-dev slew limit</td><td>unlimited</td></tr>
+      </tbody>
+    </table>
+    <p style="margin-top:10px;">Decoded positionally from the <code>PersistentSettings</code> literal supplied with this test; not independently re-verified against a live <code>'P'</code> dump.</p>
+  </div>
+
+  <div class="card">
+    <h2>Full data &mdash; 700/1700&nbsp;Hz</h2>
+    <details>
+      <summary>Show all measured points (both conditions)</summary>
+      <div id="table-wrap1" style="overflow-x:auto; margin-top:10px;"></div>
+    </details>
+  </div>
+
+  <div class="card">
+    <h2>Full data &mdash; 700/1900&nbsp;Hz</h2>
+    <details>
+      <summary>Show all measured points (both conditions)</summary>
+      <div id="table-wrap2" style="overflow-x:auto; margin-top:10px;"></div>
+    </details>
+  </div>
+
+</div>
+
+<script>
+const test1 = {
+  tone1: 700, tone2: 1700,
+  compOn: {
+    ref700: -47.265, ref1700: -47.289,
+    points: [
+      [-9300,-55.919],[-8300,-53.720],[-7300,-52.032],[-6300,-50.545],[-5300,-46.384],
+      [-4300,-45.064],[-3300,-43.358],[-2300,-41.544],[-1300,-39.061],[-300,-36.750],
+      [2700,-27.623],[3700,-35.877],[4700,-41.643],[5700,-43.660],[6700,-47.608],
+      [7700,-50.700],[8700,-53.280],[9700,-55.522],[10700,-57.160],[11700,-57.984]
+    ]
+  },
+  compOff: {
+    ref700: -48.128, ref1700: -48.131,
+    points: [
+      [-9300,-55.393],[-8300,-54.171],[-7300,-52.314],[-6300,-48.969],[-5300,-47.115],
+      [-4300,-44.739],[-3300,-42.414],[-2300,-41.440],[-1300,-40.045],[-300,-36.707],
+      [2700,-27.234],[3700,-38.847],[4700,-41.499],[5700,-44.395],[6700,-47.504],
+      [7700,-50.263],[8700,-53.924],[9700,-55.760],[10700,-56.577],[11700,-58.132]
+    ]
+  }
+};
+
+const test2 = {
+  tone1: 700, tone2: 1900,
+  compOn: {
+    ref700: -47.219, ref1900: -47.394,
+    points: [
+      [-10100,-57.481],[-8900,-54.945],[-7700,-53.247],[-6500,-48.764],[-5300,-45.109],
+      [-4100,-41.292],[-2900,-38.889],[-1700,-36.865],[-500,-35.272],
+      [3100,-34.411],[4300,-32.668],[5500,-41.228],[6700,-42.859],[7900,-46.666],
+      [9100,-51.038],[10300,-55.162],[11500,-57.690],[12700,-59.714]
+    ]
+  },
+  compOff: {
+    ref700: -47.302, ref1900: -47.961,
+    points: [
+      [-10100,-58.751],[-8900,-57.008],[-7700,-54.280],[-6500,-49.585],[-5300,-46.474],
+      [-4100,-42.192],[-2900,-38.770],[-1700,-37.690],[-500,-35.071],
+      [3100,-32.332],[4300,-34.596],[5500,-38.868],[6700,-42.763],[7900,-47.530],
+      [9100,-51.562],[10300,-55.845],[11500,-59.094],[12700,-60.882]
+    ]
+  }
+};
+
+// ---- Chart (generic, called once per tone pair) ----
+const svgNS = "http://www.w3.org/2000/svg";
+const onColor = '#2a78d6', offColor = '#eb6834';
+
+function el(tag, attrs) {
+  const e = document.createElementNS(svgNS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  return e;
+}
+
+function pathFor(points, xScale, yScale) {
+  return points.map((p, i) => (i === 0 ? 'M' : 'L') + xScale(p[0]).toFixed(1) + ',' + yScale(p[1]).toFixed(1)).join(' ');
+}
+
+function splitFamilies(points) {
+  return [points.filter(p => p[0] < 0), points.filter(p => p[0] > 0)];
+}
+
+function renderChart(svgId, legendId, test) {
+  const svg = document.getElementById(svgId);
+  const W = 820, H = 380;
+  const marginL = 46, marginR = 16, marginT = 16, marginB = 34;
+  const plotW = W - marginL - marginR, plotH = H - marginT - marginB;
+
+  const allPts = [...test.compOn.points, ...test.compOff.points];
+  const xMin = Math.min(...allPts.map(p=>p[0])) - 300;
+  const xMax = Math.max(...allPts.map(p=>p[0])) + 300;
+  const yMin = -62, yMax = 2;
+
+  const xScale = hz => marginL + (hz - xMin) / (xMax - xMin) * plotW;
+  const yScale = db => marginT + (yMax - db) / (yMax - yMin) * plotH;
+
+  for (let db = 0; db >= yMin; db -= 10) {
+    const y = yScale(db);
+    svg.appendChild(el('line', {x1: marginL, x2: W - marginR, y1: y, y2: y, class: 'grid-line'}));
+    const t = el('text', {x: marginL - 8, y: y + 4, class: 'axis-label', 'text-anchor': 'end'});
+    t.textContent = db + ' dB';
+    svg.appendChild(t);
+  }
+  svg.appendChild(el('line', {x1: marginL, x2: W - marginR, y1: yScale(yMin), y2: yScale(yMin), class: 'axis-line'}));
+
+  const xTicks = Array.from(new Set([...test.compOn.points.map(p=>p[0]), test.tone1, test.tone2]))
+    .filter(hz => hz < 0 || hz === test.tone1 || hz === test.tone2 || hz === test.compOn.points.find(p=>p[0]>0)[0])
+    .sort((a,b)=>a-b);
+  // also include a few evenly spread high-side ticks for readability
+  const highPts = test.compOn.points.filter(p=>p[0]>0).map(p=>p[0]);
+  [highPts[0], highPts[Math.floor(highPts.length/2)], highPts[highPts.length-1]].forEach(hz => { if (!xTicks.includes(hz)) xTicks.push(hz); });
+  xTicks.sort((a,b)=>a-b);
+  xTicks.forEach(hz => {
+    const x = xScale(hz);
+    const t = el('text', {x: x, y: H - 8, class: 'axis-label', 'text-anchor': 'middle'});
+    t.textContent = (hz/1000).toFixed(Math.abs(hz % 1000) < 1 ? 0 : 1) + 'k';
+    svg.appendChild(t);
+  });
+
+  function drawSeries(data, color, label) {
+    const [low, high] = splitFamilies(data.points);
+    [low, high].forEach(fam => {
+      if (fam.length < 2) return;
+      svg.appendChild(el('path', {d: pathFor(fam, xScale, yScale), fill: 'none', stroke: color, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round'}));
+    });
+    data.points.forEach(p => {
+      const g = el('g', {class: 'pt'});
+      const c = el('circle', {cx: xScale(p[0]), cy: yScale(p[1]), r: 4, fill: color, stroke: 'var(--surface-1)', 'stroke-width': 2});
+      const title = el('title', {});
+      title.textContent = label + ': ' + p[0] + ' Hz, ' + p[1].toFixed(3) + ' dBc';
+      g.appendChild(c); g.appendChild(title);
+      svg.appendChild(g);
+    });
+  }
+
+  [test.tone1, test.tone2].forEach(hz => {
+    const x = xScale(hz), y = yScale(0);
+    const g = el('g', {class: 'pt'});
+    const d = el('path', {
+      d: `M ${x} ${y-6} L ${x+6} ${y} L ${x} ${y+6} L ${x-6} ${y} Z`,
+      fill: 'var(--tone-marker)'
+    });
+    const title = el('title', {});
+    title.textContent = 'Tone at ' + hz + ' Hz (reference, 0 dBc)';
+    g.appendChild(d); g.appendChild(title);
+    svg.appendChild(g);
+  });
+
+  drawSeries(test.compOn, getComputedStyle(document.documentElement).getPropertyValue('--series-on').trim() || onColor, 'Comp ON');
+  drawSeries(test.compOff, getComputedStyle(document.documentElement).getPropertyValue('--series-off').trim() || offColor, 'Comp OFF');
+
+  // Direct end-labels skipped deliberately when the two series converge (per
+  // the skill's "when end-labels collide, don't stack them" guidance) -
+  // identity falls back to the legend + per-point hover tooltip instead.
+
+  const legend = document.getElementById(legendId);
+  legend.innerHTML = `
+    <span class="legend-item"><span class="swatch" style="background:${onColor}"></span>Comp ON</span>
+    <span class="legend-item"><span class="swatch" style="background:${offColor}"></span>Comp OFF</span>
+    <span class="legend-item"><span class="swatch-dot" style="background:var(--tone-marker)"></span>Test tone (${test.tone1} / ${test.tone2} Hz, 0 dBc ref)</span>
+  `;
+}
+
+function renderTable(wrapId, test, refLabel1, refLabel2) {
+  const tableWrap = document.getElementById(wrapId);
+  const allHz = Array.from(new Set([...test.compOn.points.map(p=>p[0]), ...test.compOff.points.map(p=>p[0])])).sort((a,b)=>a-b);
+  let html = '<table><thead><tr><th>Offset</th><th>Comp ON (dBc)</th><th>Comp OFF (dBc)</th><th>&Delta; (on&minus;off)</th></tr></thead><tbody>';
+  allHz.forEach(hz => {
+    const on = test.compOn.points.find(p=>p[0]===hz);
+    const off = test.compOff.points.find(p=>p[0]===hz);
+    const onV = on ? on[1] : null, offV = off ? off[1] : null;
+    const delta = (onV !== null && offV !== null) ? (onV - offV) : null;
+    html += `<tr><td class="hz">${hz>0?'+':''}${hz} Hz</td><td>${onV!==null?onV.toFixed(3):'&ndash;'}</td><td>${offV!==null?offV.toFixed(3):'&ndash;'}</td><td>${delta!==null?(delta>=0?'+':'')+delta.toFixed(3):'&ndash;'}</td></tr>`;
+  });
+  const on1 = test.compOn[refLabel1.key], off1 = test.compOff[refLabel1.key];
+  const on2 = test.compOn[refLabel2.key], off2 = test.compOff[refLabel2.key];
+  html += `<tr><td class="hz">${refLabel1.label}</td><td>${on1.toFixed(3)} dBm</td><td>${off1.toFixed(3)} dBm</td><td>${(on1-off1).toFixed(3)}</td></tr>`;
+  html += `<tr><td class="hz">${refLabel2.label}</td><td>${on2.toFixed(3)} dBm</td><td>${off2.toFixed(3)} dBm</td><td>${(on2-off2).toFixed(3)}</td></tr>`;
+  html += '</tbody></table>';
+  tableWrap.innerHTML = html;
+}
+
+renderChart('chart1', 'legend1', test1);
+renderChart('chart2', 'legend2', test2);
+renderTable('table-wrap1', test1, {key:'ref700', label:'700 Hz ref'}, {key:'ref1700', label:'1700 Hz ref'});
+renderTable('table-wrap2', test2, {key:'ref700', label:'700 Hz ref'}, {key:'ref1900', label:'1900 Hz ref'});
+</script>
+</body>
+</html>

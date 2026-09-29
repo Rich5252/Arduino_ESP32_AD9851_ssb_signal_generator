@@ -3039,6 +3039,112 @@ Follow-up to the previous entry's real-hardware "works well" result. User: "One 
 
 **Not yet done**: real-hardware confirmation that this specific fix actually replaces the reported "small carrier tone" with quiet noise as intended - the mechanism and the standalone-harness numbers support it strongly, but nothing here is bench evidence on the real transmitter. Worth listening for specifically next time the gate is exercised on air.
 
+## 2026-09-26, later: real-hardware confirmation - the envelope-gating fix works
+
+User, on real hardware, after the previous entry's fix (gating `envelope` post-Hilbert instead of `audio_sample` pre-Hilbert): "Yes working thankyou." First on-air confirmation that the frozen-carrier/"small carrier tone" side effect is actually resolved, not just fixed on paper/in a standalone test harness - promotes this fix from "mechanism understood + synthetic-harness-verified" to "confirmed fixed on the real transmitter."
+
+No specific detail given (what it sounds like now vs. before, which preset/threshold, whether this was A/B'd against the old behavior) - message is a brief, unambiguous confirmation, not a detailed report, so nothing quantitative to add here beyond the result itself.
+
+Still open, unchanged from before: the squelch's detector/hysteresis tuning (5ms attack, 0.01 default threshold, 0.5x hysteresis ratio) remains a reasoned first cut, not independently bench-validated against the user's original crackle, and the short-burst-vs-single-sample-click limitation documented earlier is still untested against real-world duration.
+
+## 2026-09-29: two-tone IMD test (700/1700Hz, speaker-into-mic), comp on vs comp off - headline finding is a ~9.3dB IMD3 asymmetry, not a compressor effect
+
+User ran a speaker-into-mic two-tone test at 14175kHz (SDRuno capture `SDRuno_20260929_083602Z_14175kHz.wav` uploaded alongside), framed as "thought this test was worth preserving," with envelope level set to ~10% below full scale (matched between conditions) and reporting it as "the IMD readings are very good - best I've seen," attributed tentatively to the elevated ADC-noise floor. Full numeric results (10-point wide-IMD sweep on each side of the two test tones, comp on and comp off) given in the user's message and preserved verbatim below; built into an HTML report with charts, delivered via SendUserFile.
+
+**Settings decoded** from the supplied `PersistentSettings` literal (positional, cross-checked field-by-field against the current struct layout in `settings.h`): Mic source, Chebyshev-8 ADC anti-alias filter, envelope predistortion LUT on, envelope interpolation off, AmpEQ both shelves off, gdeq default, envelope ALC on, envelope Soft-Limit on, mic_gain=+34.0dB, comp_level=6 (toggled live for the A/B), Mic Squelch ON at threshold 0.0160, freq_dev slew unlimited. Squelch being enabled during an IMD test is noted but shouldn't affect these results - both tones are well above any plausible squelch threshold, so the gate stays open throughout a steady two-tone drive.
+
+**Headline finding - a real, consistent IMD3 asymmetry, not a measurement artifact**: the two test tones are matched to within 0.02-0.03dB in both conditions (700Hz/1700Hz reference levels: -47.265/-47.289dBm comp on, -48.128/-48.131dBm comp off), ruling out uneven drive as the explanation for what follows. The classic closest-in third-order pair - 2f1-f2 (-300Hz offset) and 2f2-f1 (+2700Hz offset) - is NOT symmetric: 2f2-f1 (high side) measures -27.623dBc (comp on) / -27.234dBc (comp off), while 2f1-f2 (low side) measures -36.750dBc (comp on) / -36.707dBc (comp off) - a 9.1-9.5dB asymmetry, present almost identically in both conditions (so it's a property of the transmitter's nonlinearity itself, not the compressor). The high-side product is the worst spur in the ENTIRE sweep by a wide margin - if a single "IMD3" number is ever quoted for this transmitter, it should be the high-side (-27.2 to -27.6dBc) figure, not the more flattering low-side one.
+
+**Comp on vs comp off, at matched envelope peak: no clear systematic effect on the wide-IMD comb.** Per-product deltas (comp_on - comp_off) range from -1.58dB to +2.97dB across the 20 measured offsets, with no consistent sign - comp on is sometimes slightly better, sometimes slightly worse, mostly within a fraction of a dB. The single largest delta (+2.97dB, comp on worse) is at +3700Hz; everything else is under ~1.6dB. Read as: at this specific drive point (both conditions deliberately matched to the same envelope peak), the compressor's makeup gain doesn't measurably change the IMD comb's shape either way - consistent with it operating well below the point where the envelope chain's own nonlinearity (predistort LUT, ALC, Soft-Limit, Hilbert/polar recombination) dominates.
+
+**Both combs roll off cleanly and monotonically**, spaced at 1kHz (the two-tone difference frequency) - typical EER/polar spectral regrowth, not evidence of anything newly broken. High-side ladder reaches ~-58dBc by +11700Hz; low-side reaches ~-56dBc by -9300Hz.
+
+**On "best I've seen" - not independently benchmarked against project history this entry.** This test used a 700/1700Hz two-tone pair (1kHz spacing); this project's earlier two-tone/IMD work (see entries from 2026-09-09 onward) mostly used a 700/1900Hz pair (1200Hz spacing) - different spacing changes where products fall relative to any passband edge, so a direct numeric comparison against older logged figures isn't apples-to-apples without deeper review. Taking the user's qualitative assessment at face value here; a dedicated historical comparison (if wanted) is separate follow-up work, not done as part of this entry.
+
+**WAV spot-check, and why its numbers aren't quoted above**: independently loaded the uploaded IQ capture (stereo 16-bit, 388.888kHz sample rate, 4.45s, centred on 14175kHz) - confirmed a steady, non-transient envelope throughout (a single steady-state run, not a combined on-disk recording of both conditions) and located the two test tones close to their nominal 700/1700Hz offsets via FFT, confirming the general two-tone structure. A naive whole-file Blackman-Harris FFT over the full recording bandwidth, however, does NOT cleanly reproduce the reported per-product dB figures (some near-in products came back within a couple dB of the tones themselves, implausibly high) - almost certainly because a blind broadband transform over the entire IQ bandwidth also picks up other energy (adjacent activity on a shared 20m allocation, SDR passband/decimation-edge artifacts) that the user's own targeted "Wide IMD (250Hz bndw)" tool specifically excludes. Flagging this rather than silently either trusting or overriding either source: the report uses the user's harness numbers throughout, with the WAV kept as the archived reference capture, not as a second quantitative dataset.
+
+**Full data** (dBc unless noted; also charted in the delivered report):
+
+| offset | comp ON | comp OFF |
+|---|---|---|
+| 700Hz ref | -47.265 dBm | -48.128 dBm |
+| 1700Hz ref | -47.289 dBm | -48.131 dBm |
+| -300Hz | -36.750 | -36.707 |
+| -1300Hz | -39.061 | -40.045 |
+| -2300Hz | -41.544 | -41.440 |
+| -3300Hz | -43.358 | -42.414 |
+| -4300Hz | -45.064 | -44.739 |
+| -5300Hz | -46.384 | -47.115 |
+| -6300Hz | -50.545 | -48.969 |
+| -7300Hz | -52.032 | -52.314 |
+| -8300Hz | -53.720 | -54.171 |
+| -9300Hz | -55.919 | -55.393 |
+| +2700Hz | -27.623 | -27.234 |
+| +3700Hz | -35.877 | -38.847 |
+| +4700Hz | -41.643 | -41.499 |
+| +5700Hz | -43.660 | -44.395 |
+| +6700Hz | -47.608 | -47.504 |
+| +7700Hz | -50.700 | -50.263 |
+| +8700Hz | -53.280 | -53.924 |
+| +9700Hz | -55.522 | -55.760 |
+| +10700Hz | -57.160 | -56.577 |
+| +11700Hz | -57.984 | -58.132 |
+
+**Not yet done**: no root-cause investigation into WHY the high-side (2f2-f1) IMD3 product runs ~9.3dB hotter than the low-side (2f1-f2) one - that's a real, repeatable, and fairly large asymmetry that would be worth understanding (candidates not yet explored: asymmetric group-delay/EQ response across the audio band, an asymmetry in the Hilbert transform's own frequency response, or something in the predistort LUT/ALC/Soft-Limit chain that treats rising vs falling envelope excursions differently). No historical cross-check against the project's own earlier (700/1900Hz) IMD baselines.
+
+## 2026-09-29, later: chasing the 9.3dB IMD3 asymmetry - ruled out audio-band noise and (mostly) ruled out the presence-EQ tone-mismatch mechanism; matches this project's own long-tracked relative_delay-sensitive Low/High 3rd IMD gap instead
+
+User's hypothesis on the previous entry's headline finding: "the first IMD on high side is in the audio band noise I think - is that effect significant?" Worked through it rather than guessing.
+
+**Audio-band noise, checked against the comb's own shape and found unlikely as the explanation**: a genuine elevated noise floor in the mic/ADC/DSP chain (which absolutely can reach the transmitted RF in this architecture, same path the wanted tones take) would be expected to also raise neighboring 1kHz-spaced bins, not just the one at +2700Hz - but the very next point, +3700Hz, drops 8-12dB straight back onto the comb's normal decay trend. That sharp a fall-off right after the peak reads as a discrete coherent product, not a raised noise floor local to one bin.
+
+**Re-checked this project's own 2026-09-03 presence-EQ finding (`group_delay_fit_notes.md`) against TODAY's actual coefficients, rather than assume the old number still applies**: that entry (for the 700/1900Hz pair) found the presence peak boosts the higher tone several dB more than the lower one - a textbook route to asymmetric third-order products, since for a static cubic nonlinearity the ratio of the two IMD3 products' POWER equals `20*log10(a2/a1)` (a2/a1 = the two drive tones' amplitude ratio reaching the nonlinearity). Recomputed the actual RBJ HPF (300Hz, Q=0.707) + presence peak (2200Hz, Q=1.0, **+2.0dB** - today's configured gain in `ssb_mic_test.ino`, not necessarily the same gain the September entry used) response at 700Hz and 1700Hz: combined differential is only **+1.44dB** today, which would predict only ~1.4dB of IMD3 asymmetry via this mechanism alone - real, right direction (favors the higher tone, matching the observed high-side-worse pattern), but nowhere near sufficient to explain the observed ~9.3dB gap by itself.
+
+**What actually matches, closely and repeatedly: the `relative_delay_samples`-sensitive Low/High 3rd IMD gap this project has tracked since 2026-09-01.** Every logged two-tone run in `group_delay_fit_notes.md` that reports both figures shows "High 3rd IMD" worse than "Low 3rd IMD," in every configuration tested: delay=1.00 (gdeq/interp off) -41.41/-34.17dB (7.24dB gap); delay=3.00 (gdeq+`I` on) -34.50/-29.97dB (4.53dB gap); delay=1.10 (gdeq alone, re-tuned for min 3rd IMD) -30.90/-27.17dB (3.73dB gap). This test's own figures (-36.7/-27.2 to -27.6dBc, ~9.3dB gap) are the same pattern, same direction, at `relative_delay=2.68` - a value that doesn't match any of those three previously re-tuned points, and the resulting gap here is larger than any of them, consistent with 2.68 not being specifically optimized against this asymmetry for today's EQ/gdeq/interp combination.
+
+**Answer given to the user**: significant in the sense that it reliably sets the real worst-case IMD3 figure (quote the high-side number, not the low-side one) and is larger here than any previously-logged combination; not significant as evidence of anything newly broken - it's a repeated, structural signature of this transmitter (most likely the AM/envelope-vs-PM/phase path timing mismatch this project has already spent real effort on), not audio-band noise and not primarily the presence EQ. Recommended concrete next step: re-sweep `relative_delay_samples` on this exact 700/1700Hz pair while watching the Low/High 3rd IMD gap specifically - the same bench procedure already used multiple times in `group_delay_fit_notes.md`, not yet run for this pair/gain/gdeq combination.
+
+**Not yet done**: the actual relative_delay sweep against this 700/1700Hz pair and today's settings (env_gdeq default/off, envelope_interp off, ampeq off, presence_gain=2.0dB) - everything above is reasoned from existing coefficients/history, not a fresh bench measurement targeting this specific asymmetry.
+
+## 2026-09-29, later still: CORRECTION - the 9.3dB IMD3 asymmetry was mostly a noise-contaminated measurement bin, not the relative_delay/AM-PM mechanism the previous entry blamed
+
+User re-ran the same two-tone IMD test with the pair pushed up to 700/1900Hz (from 700/1700Hz), specifically to move the near-in products off whatever frequency the earlier elevated reading sat at: "I pushed the 3rds up in freq by changing to 700/1900 and it shows that the power in 250Hz is picking up the background noise previously. There is asymmetry that we've always seen but the absolute levels are very good." Full data below; added to the delivered HTML report (both tone pairs now shown side by side, with a corrected "What this shows" narrative).
+
+**This confirms the user's original hypothesis from two entries ago, and retracts this file's own previous conclusion.** At 700/1900Hz, the near-in products move from &minus;300/+2700Hz to &minus;500/+3100Hz, and the asymmetry collapses: low side (2f1&minus;f2, &minus;500Hz) reads &minus;35.272dBc (comp on) / &minus;35.071dBc (comp off); high side (2f2&minus;f1, +3100Hz) reads &minus;34.411dBc (comp on) / &minus;32.332dBc (comp off) - a residual gap of only 0.86dB (comp on) / 2.74dB (comp off), down from the original ~9.3dB. Reference tone balance stayed tight (700Hz vs 1900Hz: 0.175dB comp on, 0.659dB comp off). Since moving the measurement frequency is the only thing that changed between the two runs, the simplest and correct explanation is the user's own: the +2700Hz bin in the original 700/1700Hz test was picking up a background noise/spur contribution specific to that frequency, not (mainly) measuring a genuine transmitter third-order product - the earlier ~9.3dB "IMD3 asymmetry" finding overstated the transmitter's actual nonlinearity.
+
+**This means the previous entry's diagnosis (matching the gap to `group_delay_fit_notes.md`'s documented relative_delay-sensitive Low/High 3rd IMD pattern) was the wrong call, or at best a minor contributor, not the dominant one.** Worth being explicit about why that reasoning went wrong in hindsight: the historical Low/High 3rd IMD table used the 700/1900Hz pair (its high-side product was always at +3100Hz, same frequency as today's re-test, not +2700Hz), so those OLDER figures (3.7-7.2dB gaps) were never affected by whatever sits near 2700Hz - they're likely still genuine relative_delay-sensitive asymmetry, and remain a real, small (few-dB) effect, consistent with today's residual 0.9-2.7dB gap at 700/1900Hz. But applying that same historical pattern to explain the NEW test's 700/1700Hz result was an error - that test's high-side product landed at a different, apparently noise-affected frequency (+2700Hz) never present in the historical comparison set, and the size of the discrepancy (9.3dB vs. the 3.7-7.2dB historical range) should have been treated as a bigger red flag against a clean match than it was at the time.
+
+**Absolute levels, once measured away from the noisy bin, are good** - roughly &minus;32 to &minus;35dBc on the near-in products at 700/1900Hz, with the far rungs of the comb reaching &minus;59 to &minus;61dBc by the 9th/10th product (vs. &minus;56 to &minus;58dBc for the 700/1700Hz run) - consistent with the user's "the absolute levels are very good" assessment now that the inflated near-in reading is out of the picture.
+
+**One secondary wrinkle noted in the updated report, not chased further here**: at 700/1900Hz, the near-in high side isn't perfectly clean either - both +3100Hz (3rd order) and +4300Hz (5th order, 3f2&minus;2f1) read within ~2dB of each other, rather than the 5th-order term dropping cleanly below the 3rd the way a simple nonlinearity model would predict. Flagged as a minor, secondary detail worth another look sometime, not this entry's main finding.
+
+**Full data, 700/1900Hz** (dBc unless noted):
+
+| offset | comp ON | comp OFF |
+|---|---|---|
+| 700Hz ref | -47.219 dBm | -47.302 dBm |
+| 1900Hz ref | -47.394 dBm | -47.961 dBm |
+| -500Hz | -35.272 | -35.071 |
+| -1700Hz | -36.865 | -37.690 |
+| -2900Hz | -38.889 | -38.770 |
+| -4100Hz | -41.292 | -42.192 |
+| -5300Hz | -45.109 | -46.474 |
+| -6500Hz | -48.764 | -49.585 |
+| -7700Hz | -53.247 | -54.280 |
+| -8900Hz | -54.945 | -57.008 |
+| -10100Hz | -57.481 | -58.751 |
+| +3100Hz | -34.411 | -32.332 |
+| +4300Hz | -32.668 | -34.596 |
+| +5500Hz | -41.228 | -38.868 |
+| +6700Hz | -42.859 | -42.763 |
+| +7900Hz | -46.666 | -47.530 |
+| +9100Hz | -51.038 | -51.562 |
+| +10300Hz | -55.162 | -55.845 |
+| +11500Hz | -57.690 | -59.094 |
+| +12700Hz | -59.714 | -60.882 |
+
+**Not yet done**: no direct identification of what specifically sits near +2700Hz in the 700/1700Hz configuration (candidates not checked: a PWM/switching-related spur, an ADC/DDS clock artifact, or simply elevated broadband noise that happens to be locally worse in that narrow band) - the conclusion here is "it's not mainly the transmitter's own IMD3," not a specific identified noise source. No re-measurement of the 700/1700Hz pair to see if the +2700Hz reading is repeatable/consistent run-to-run (which would help distinguish a stable discrete spur from transient interference).
+
 ## Open items carried from earlier sessions, still unresolved
 
 - `MAX_FREQ_DEV_HZ` currently `20000.0f` (config.h:405) - a widened

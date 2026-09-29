@@ -1071,7 +1071,7 @@ void setup()
             .enable = AUDIO_FX_ENABLED,
             .hpf_freq_hz = 300.0f,
             .presence_freq_hz = 2200.0f,
-            .presence_gain_db = 2.0f,
+            .presence_gain_db = 4.0f,
             .presence_q = 1.0f,
             // 2026-09-25: comp_threshold/comp_ratio REMOVED - the
             // compressor's threshold is now a fixed internal constant
