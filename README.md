@@ -1,5 +1,8 @@
 # SSB prime mover for ham radio SDR transceiver.
 
+<img width="510" height="287" alt="SSB_Exciter_G4AHN 1" src="https://github.com/user-attachments/assets/2982b9aa-a960-415a-913b-b35839123f89" />
+
+
 This project was developed to add SSB to my SDR transceiver system. The 
 objective was to maximise the capabilities of the ESP32-S3 and AD9851 DDS with 
 minimal additional circuitry while creating a high performance SSB signal
@@ -10,6 +13,8 @@ final add-in to my TXLink controller.
 
 I make no apology for using Claude AI to assist here with the benefit of
 detailed engineering notes and reports as things evolved.
+
+Current code is fully operational and achieving >33dB IMD performance.
 
 73, G4AHN
 
