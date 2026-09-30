@@ -484,7 +484,7 @@
 // actually runs the feature at its intended rate. Reflash back to 1
 // afterward, same convention as every other temporary bump of this
 // define - don't leave it here as a new silent default.
-#define ENVELOPE_INTERP_FACTOR 4
+#define ENVELOPE_INTERP_FACTOR 1
 
 // 2026-09-08: v5 experiment - "get x4 interp working at 16kHz" by
 // removing the wake-rate cost entirely instead of trying to shrink it.
@@ -685,7 +685,7 @@
 // of interpolation at all. Revert to 0 and FACTOR back to 1 if this
 // fresh test also shows a real-hardware problem - same revert instructions
 // as before, still correct.
-#define ENVELOPE_ISR_INTERP_ENABLED 1
+#define ENVELOPE_ISR_INTERP_ENABLED 0
 
 #if ENVELOPE_ISR_INTERP_ENABLED && !(AD9851_ATTACHED && AD9851_ISR_WRITE_ENABLED)
 #error "ENVELOPE_ISR_INTERP_ENABLED requires AD9851_ISR_WRITE_ENABLED (and AD9851_ATTACHED) - both config.h flags - see this flag's own comment above for why: they share the same on_timer_alarm() full-tick counter/notify-gating machinery, nested rather than generalized."
