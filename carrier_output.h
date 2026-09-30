@@ -23,11 +23,22 @@
 #define AD9851_PIN_FQUD   11
 #define AD9851_PIN_RESET  9
 #define REF_CLK_HZ        30000000u
-#define CARRIER_HZ        14200160u  // +160Hz calibration offset - this AD9851 module's actual
+#define CARRIER_HZ        14200162u  // +162Hz calibration offset - this AD9851 module's actual
                                       // REF_CLK isn't precisely 30MHz (expected given it's an
                                       // uncalibrated XO, not a precision reference); this value
                                       // makes the real transmitted output land on 14200000 exactly,
                                       // confirmed against the user's calibrated receiver
+                                      //
+                                      // 2026-09-30: 14200160 -> 14200162. The 700/1900 SDRuno I/Q
+                                      // capture (centre 14175kHz, so the carrier should sit at
+                                      // +25000Hz baseband) put the carrier at ~24997.9Hz, i.e. ~2.1Hz
+                                      // LOW, and the user confirmed the AD9851 absolute frequency
+                                      // is slightly low. The carrier position was inferred as
+                                      // (lower tone peak - 700Hz), so it is good to roughly
+                                      // +/-0.25Hz (FFT bin), not better; the SDR's own reference
+                                      // was not independently checked here. CARRIER_HZ is a whole-Hz
+                                      // integer, so +2 (not +2.1) is the closest step, leaving about
+                                      // 0.1Hz of residual. NOT re-measured after this change.
 
 // Inits the AD9851 SPI driver and sets the initial carrier frequency
 // (CARRIER_HZ). Call once from setup().

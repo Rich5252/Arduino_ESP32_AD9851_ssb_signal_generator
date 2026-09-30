@@ -1102,6 +1102,73 @@ void handle_serial_commands(void)
             vTaskList(task_list_buf);
             Serial.write((const uint8_t *)task_list_buf, strlen(task_list_buf));
             serial_reply("-> end task list\r\n");
+        } else if (c == 'b') {
+            // 2026-09-30: new diagnostic, added after three real bugs in
+            // ENVELOPE_ISR_INTERP_ENABLED's fast-tick PWM path (missing
+            // duty-override guard, Q4->native duty scaling, carry-forward
+            // telescoping) were each found and fixed in turn from the
+            // user's real-hardware bench reports, yet output was STILL
+            // reported "the same low level" on Preset 1 afterward, with
+            // duty-override confirmed off and offset/scale confirmed sane
+            // (0.20/0.90). Rather than propose a fourth unverified fix
+            // blind - there's no ESP-IDF/Arduino-ESP32 toolchain in this
+            // environment to compile or test against, only this project's
+            // own source to read - this prints the actual running numbers
+            // so the discrepancy (if any) between what dsp_task thinks it
+            // staged and what the ISR/hardware actually did with it can be
+            // seen directly. See envelope_output_isr_interp_get_debug()
+            // (envelope_output.h/.cpp) for what each field means and why.
+            //
+            // hw_duty_now is the important cross-check: it's read back
+            // live via ledc_get_duty(), completely independent of this
+            // module's own software state - if it tracks accum_q4>>4
+            // closely, the ISR's write is reaching the hardware as
+            // expected and the remaining problem is further upstream
+            // (envelope magnitude itself, offset/scale application order,
+            // etc.); if it does NOT track accum_q4>>4, the raw peripheral
+            // register write itself (or the assumed conf0.low_speed_update/
+            // conf1.duty_start commit sequence - see that function's own
+            // field-name-uncertainty caveat) is the next suspect instead.
+#if PWM_COMPARISON_ENABLED && ENVELOPE_ISR_INTERP_ENABLED
+            envelope_output_isr_interp_debug_t dbg;
+            envelope_output_isr_interp_get_debug(&dbg);
+            // Second snapshot 20ms later (blocks loop() for 20ms - it is
+            // mostly idle, same tolerance as the 'L' handler) so the ISR
+            // call RATE can be printed, not just a cumulative count.
+            // Expected at FACTOR=4: ~1280 calls per 20ms.
+            delay(20);
+            envelope_output_isr_interp_debug_t dbg2;
+            envelope_output_isr_interp_get_debug(&dbg2);
+            serial_reply("-> ISR liveness: override_on=%lu  calls_total delta over ~20ms=%lu (expect ~1280 at 64kHz)  "
+                          "calls_past_guard delta=%lu  accum_q4 before/after=%ld/%ld\r\n",
+                          (unsigned long)dbg2.override_on,
+                          (unsigned long)(dbg2.calls_total - dbg.calls_total),
+                          (unsigned long)(dbg2.calls_past_guard - dbg.calls_past_guard),
+                          (long)dbg.accum_q4, (long)dbg2.accum_q4);
+            serial_reply("-> LEDC timer ACTUAL freq = %lu Hz (ledc_get_freq) vs write tick %lu Hz -> beat %ld Hz "
+                          "(requested %lu Hz)\r\n",
+                          (unsigned long)dbg2.ledc_freq_hz,
+                          (unsigned long)(ENVELOPE_INTERP_FACTOR * SAMPLE_RATE_HZ),
+                          (long)((int32_t)dbg2.ledc_freq_hz - (int32_t)(ENVELOPE_INTERP_FACTOR * SAMPLE_RATE_HZ)),
+                          (unsigned long)RSET_MOD_LEDC_FREQ_HZ);
+            uint32_t accum_native = (uint32_t)((dbg.accum_q4 + 8) >> 4);
+            uint32_t target_native = (uint32_t)((dbg.last_target_q4 + 8) >> 4);
+            serial_reply("-> ISR-interp debug: last_envelope=%.4f  last_target_q4=%ld (~%lu native)  "
+                          "step_q4=%ld  accum_q4=%ld (~%lu native)  carry_q4=%ld  "
+                          "hw_duty_now=%lu (native, ledc_get_duty() readback)  "
+                          "pwm_offset=%.4f  pwm_scale=%.4f\r\n",
+                          dbg.last_envelope,
+                          (long)dbg.last_target_q4, (unsigned long)target_native,
+                          (long)dbg.step_q4,
+                          (long)dbg.accum_q4, (unsigned long)accum_native,
+                          (long)dbg.carry_q4,
+                          (unsigned long)dbg.hw_duty_now,
+                          envelope_output_get_pwm_offset(), envelope_output_get_pwm_scale());
+#else
+            serial_reply("-> ISR-interp debug: unavailable - PWM_COMPARISON_ENABLED && "
+                          "ENVELOPE_ISR_INTERP_ENABLED is not 1 in this build (config.h/"
+                          "envelope_interp.h)\r\n");
+#endif
         } else if (c == 'P') {
             // Prints every current lever as a single comma-separated line,
             // in exactly PersistentSettings's field order (name,

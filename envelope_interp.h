@@ -374,6 +374,23 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "esp_attr.h"
+// 2026-09-29: added for ENVELOPE_ISR_INTERP_ENABLED's own #error guards
+// below, which reference AD9851_ATTACHED/AD9851_ISR_WRITE_ENABLED
+// (config.h). Real-hardware compile (2026-09-29) found this file gets
+// pulled in via settings.h -> dsp_state.h -> dsp_state.cpp WITHOUT
+// config.h already included in that translation unit, and separately via
+// envelope_interp.cpp's own include order (envelope_interp.h before its
+// own config.h include) - in both cases AD9851_ATTACHED/AD9851_ISR_
+// WRITE_ENABLED read as undefined (0) at the #if below regardless of
+// their real config.h values, misfiring the guard. config.h has #pragma
+// once, so including it here is always safe no matter what already
+// included it - same pattern envelope_output.h already uses for the same
+// reason. This is the general fix: any header whose OWN #if logic
+// references a config.h macro should include config.h itself, rather
+// than relying on every caller's include order to happen to get it right
+// first - envelope_interp.h just didn't need to until this flag added
+// its first such reference.
+#include "config.h"
 
 // Deliberately modest first step (see header comment above for why this
 // isn't just "copy Hans's 28x") - not currently exposed as a runtime-
@@ -456,7 +473,18 @@
 // this to 4 (or higher) ONLY for a deliberate, temporary interpolation-
 // related test build, reflashing back to 1 afterward - not the other way
 // around. Restored to that actual correct resting value now.
-#define ENVELOPE_INTERP_FACTOR 1
+//
+// 2026-09-29, later still: bumped BACK to 4 for a deliberate, temporary
+// test - see envelope_interp.h's ENVELOPE_ISR_INTERP_ENABLED comment
+// below and moving_forward_notes.md's matching dated correction entry.
+// This was left at 1 (the resting value above) through v6's entire build
+// and first real-hardware test - meaning that test's "regression" never
+// actually exercised 64kHz interpolation at all, only the new ISR-write
+// MECHANISM at the unchanged 16kHz rate. This is the first build that
+// actually runs the feature at its intended rate. Reflash back to 1
+// afterward, same convention as every other temporary bump of this
+// define - don't leave it here as a new silent default.
+#define ENVELOPE_INTERP_FACTOR 4
 
 // 2026-09-08: v5 experiment - "get x4 interp working at 16kHz" by
 // removing the wake-rate cost entirely instead of trying to shrink it.
@@ -592,6 +620,79 @@
 // see the notes file for candidate next steps (predominantly: accept x1 on
 // this output path, or reconnect the DAC).
 #define ENVELOPE_INTERP_USE_HW_FADE 0
+
+// 2026-09-29: v6 - the real, genuinely-integer fast-tick envelope write,
+// built after ISR_PWM_FIXED_TEST_ENABLED's bench probe (config.h,
+// ssb_mic_test.ino) confirmed a raw per-fast-tick LEDC register write
+// from true ISR context fits the timing budget cleanly (three rounds of
+// real-hardware iteration: an initial two-writer race mis-diagnosed as an
+// LEDC low-speed-commit-trigger issue, then correctly traced to
+// envelope_output_write_pwm()'s competing task-context write never having
+// been silenced - see moving_forward_notes.md's 2026-09-29 entries for
+// the full story). Where v1-v3 crashed or starved Core 1 trying to move
+// EITHER the interpolation arithmetic OR a general LEDC driver call into
+// the ISR, and v4/v4.x instead sped up dsp_task's own full-tick rate and
+// left interpolation as a TASK-side software ramp (compute_ramp_value(),
+// below) - which stopped working once AD9851_ISR_WRITE_ENABLED (config.h)
+// started gating dsp_task's notify to full-tick boundaries only, making
+// the task-side "interp tick" wakes this ramp depends on unreachable - v6
+// splits the work instead: dsp_task (float-safe TASK context) computes a
+// per-fast-tick duty STEP once per full tick via envelope_output_isr_
+// stage_step() (envelope_output.h/.cpp), and a tiny IRAM_ATTR integer-
+// only function, envelope_output_isr_fasttick_step(), applies that step
+// and writes the raw LEDC register EVERY fast tick, called directly from
+// on_timer_alarm() (ssb_mic_test.ino) - see those two functions' own
+// comments for the fixed-point design.
+//
+// Bypasses compute_ramp_value() and the CATMULL_ROM/LINEAR/HOLD curve
+// selection entirely - this mode is LINEAR-ONLY (a plain per-tick delta
+// toward each new full-tick target), and IGNORES the runtime 'I' toggle
+// (envelope_interp_set_enabled()) - see envelope_interp_on_full_tick()'s
+// own comment for exactly where in that function this branch sits and
+// why 'I' has no effect on the PWM leg while this flag is on. This is a
+// deliberate scope choice, not an oversight: once this compile-time flag
+// owns the PWM leg, the OLD software curve system it bypasses has nothing
+// left to select between.
+//
+// REQUIRES AD9851_ISR_WRITE_ENABLED (config.h) - see the #error guard
+// below. Both rely on the SAME on_timer_alarm() full-tick counter/notify-
+// gating machinery; rather than generalize that machinery to a third
+// independent condition (AD9851_ATTACHED && AD9851_ISR_WRITE_ENABLED) ||
+// ENVELOPE_ISR_INTERP_ENABLED, which would need touching more of
+// on_timer_alarm()'s/dsp_task's existing conditionals than this staged,
+// bench-validated feature justifies, this mode is simply nested INSIDE
+// the existing AD9851_ISR_WRITE_ENABLED block - correct for this
+// project's actual hardware anyway, since real fast-tick envelope
+// interpolation without also having the AD9851 ISR write active isn't a
+// configuration this transmitter actually uses.
+//
+// NOT YET BENCH-VALIDATED - built directly on top of the fixed-value
+// probe's clean timing result, but that probe never wrote a REAL,
+// changing value every tick, only a constant. The per-tick ISR write cost
+// should be near-identical (same instruction count either way - the
+// value written doesn't change how long the write takes), but this has
+// not itself been confirmed on a scope/bench yet. CHIRP mode is NOT
+// compatible with this flag, same reason as AD9851_ISR_WRITE_ENABLED/
+// ENVELOPE_INTERP_USE_HW_FADE (dsp_task isn't woken on interp ticks under
+// any of these, capping CHIRP's fast per-tick waveform generation to
+// SAMPLE_RATE_HZ instead of its intended 20kHz sweep range).
+//
+// 2026-09-29, later still: re-enabled for a genuine first test at
+// ENVELOPE_INTERP_FACTOR=4 (see that define's own matching comment
+// above) - the previous "confirmed regression" run (moving_forward_
+// notes.md, same date) turned out to have been at FACTOR=1, which made
+// it a test of the ISR-write mechanism at the unchanged 16kHz rate, not
+// of interpolation at all. Revert to 0 and FACTOR back to 1 if this
+// fresh test also shows a real-hardware problem - same revert instructions
+// as before, still correct.
+#define ENVELOPE_ISR_INTERP_ENABLED 1
+
+#if ENVELOPE_ISR_INTERP_ENABLED && !(AD9851_ATTACHED && AD9851_ISR_WRITE_ENABLED)
+#error "ENVELOPE_ISR_INTERP_ENABLED requires AD9851_ISR_WRITE_ENABLED (and AD9851_ATTACHED) - both config.h flags - see this flag's own comment above for why: they share the same on_timer_alarm() full-tick counter/notify-gating machinery, nested rather than generalized."
+#endif
+#if ENVELOPE_ISR_INTERP_ENABLED && ENVELOPE_INTERP_USE_HW_FADE
+#error "ENVELOPE_ISR_INTERP_ENABLED and ENVELOPE_INTERP_USE_HW_FADE both attempt to solve fast-tick envelope smoothing a different way - pick exactly one."
+#endif
 
 // v4.3: which curve compute_ramp_value() evaluates over the [s_p1,s_p2]
 // segment - see the "v4.3" header note above for the full rationale.

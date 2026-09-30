@@ -210,6 +210,29 @@ void IRAM_ATTR envelope_interp_on_full_tick(float envelope, int64_t tick_start_u
     // No-op when SDM_COMPARISON_ENABLED (config.h) is 0.
     envelope_output_write_sdm(envelope);
 
+#if ENVELOPE_ISR_INTERP_ENABLED
+    // 2026-09-29: v6 - see envelope_interp.h's own comment on this flag
+    // for the full design/history. Placed BEFORE the s_enabled ('I')
+    // check below, deliberately: once this compile-time flag owns the PWM
+    // leg, it owns it unconditionally - 'I' toggled the OLD software
+    // curve system (HOLD/LINEAR/CATMULL_ROM via compute_ramp_value()),
+    // which this mode bypasses entirely, so there is nothing left for 'I'
+    // to turn on or off here. envelope_output_isr_stage_step() (envelope_
+    // output.h/.cpp) computes this tick's per-fast-tick duty step (float-
+    // safe, TASK context) from the plain envelope value - the actual
+    // register write happens every fast tick from ISR context via
+    // envelope_output_isr_fasttick_step(), called directly from
+    // on_timer_alarm() (ssb_mic_test.ino), not from here. s_p0..s_p3/
+    // s_m1/s_m2 above are kept updated anyway (same "a few wasted FLOPs"
+    // tradeoff ENVELOPE_INTERP_USE_HW_FADE's own branch already accepts)
+    // so nothing goes stale if this is ever flipped off without a
+    // reflash - though, like HW_FADE, that scenario doesn't actually
+    // arise yet since this is a compile-time-only flag.
+    envelope_output_isr_stage_step(envelope);
+    s_last_value = envelope;
+    return;
+#endif
+
     if (!s_enabled) {
         s_last_value = envelope;
         envelope_output_write_pwm(envelope);
@@ -281,12 +304,16 @@ void IRAM_ATTR envelope_interp_on_full_tick(float envelope, int64_t tick_start_u
 
 void IRAM_ATTR envelope_interp_on_interp_tick(void)
 {
-#if ENVELOPE_INTERP_USE_HW_FADE
-    // 2026-09-08: defensive no-op only - should never actually be reached
-    // under this mode. dsp_task's is_full_tick is unconditionally true when
-    // this flag is on (see the .ino's on_timer_alarm()/dsp_task changes),
-    // so on_timer_alarm() never generates the "interp-only" (sub-tick)
-    // wakes this function exists to handle in the software-ramp modes.
+#if ENVELOPE_INTERP_USE_HW_FADE || ENVELOPE_ISR_INTERP_ENABLED
+    // 2026-09-08, extended 2026-09-29 to also cover ENVELOPE_ISR_INTERP_
+    // ENABLED: defensive no-op only - should never actually be reached
+    // under either mode. dsp_task's is_full_tick is unconditionally true
+    // when either flag is on (see the .ino's on_timer_alarm()/dsp_task
+    // changes), so on_timer_alarm() never generates the "interp-only"
+    // (sub-tick) wakes this function exists to handle in the software-ramp
+    // modes - ENVELOPE_ISR_INTERP_ENABLED's own fast-tick stepping happens
+    // entirely in envelope_output_isr_fasttick_step(), called directly
+    // from on_timer_alarm(), never through this function.
     return;
 #endif
     if (!s_enabled || s_reseed_pending) {

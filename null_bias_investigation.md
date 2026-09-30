@@ -5501,6 +5501,186 @@ Confirmed the live ADC anti-alias filter (Butterworth/Chebyshev, all orders) is 
 
 **Not yet done**: no ADC-input dither has ever been implemented or tested in this project - only the test generator's frequency dither exists today.
 
+## 2026-09-29, later still: reviewed the "nexrig" open-source EER project at user's request - cross-referenced here only because it independently supports the ADC-dither hypothesis from this file's own dither history, not because it touches null-bias directly
+
+Full review is in moving_forward_notes.md's matching entry; noted here only for the dither cross-reference, consistent with this file's practice of tracking every dither-related thread separately from the null-crossing phase-bias mechanism itself.
+
+Briefly: nexrig (github.com/alanmimms/nexrig) is a similarly-architected EER/polar HF transmitter project, but it's pre-hardware/design-stage (schematics and simulation only, no built PA, no bench data) - so there's no measured performance to compare against this project's own real-hardware numbers, and nothing here bears on the null-crossing `atan2` bias this file tracks. The one relevant detail: nexrig's receive path uses an external 24-bit sigma-delta audio ADC (AK5578) rather than a microcontroller's raw SAR ADC - sigma-delta ADCs inherently dither/noise-shape as part of normal operation, which independently supports (without confirming on our own hardware) the undithered-12-bit-SAR-ADC-quantization hypothesis raised two entries up in this file. That hypothesis is about ADC-domain AMPLITUDE dither on the real analog input signal - still a completely different mechanism from this file's own `'Q'` synthetic-tone FREQUENCY dither work and from the null-crossing phase-bias mechanism itself. No new connection to null-bias found; logged purely so a future session doesn't conflate "an external project uses a dithered ADC" with anything about this file's actual subject.
+
+## 2026-09-29, later still: cross-reference only - user's PWM/DAC and envelope-interpolation discussion touches this file's own open item 4/5 history, worth linking even though it's not new null-bias work
+
+Full technical discussion is in moving_forward_notes.md's matching entry (PWM/RSET filter as the likely real speech-quality bottleneck vs the ADC; why the MCP4725 DAC path is I2C-speed-limited, not just "disconnected" arbitrarily; why envelope interpolation is pinned at `ENVELOPE_INTERP_FACTOR=1` for two SEPARATE reasons, not one). Logged here only for the direct connection to this file's own "Open, un-actioned next steps" item 5 (the 2026-08-31 finding that `'I'` made two-tone stability "much worse," parked as higher priority than the null-bias fix directions - see "Where to resume" below).
+
+**Relevant correction to keep in mind if item 5 is ever picked back up**: that 2026-08-31 finding predates the AD9851-ISR-write fix (2026-09-19) entirely. It's now clear from re-reading `envelope_interp.h`'s full history that there were ALREADY two independently-confirmed real-hardware problems with raising `ENVELOPE_INTERP_FACTOR` above 1 even before the 2026-08-31 "`'I'` audibly worse" finding: a 2026-09-07-confirmed wake-rate "burble" present even with `'I'` OFF (i.e., not specific to the interpolation arithmetic itself), and the three earlier v1-v3 crash/starvation/jitter failures `envelope_interp.h` documents. So item 5's "`'I'` makes things worse" finding could be yet another symptom of the SAME wake-rate cost problem, rather than a new, fifth, `'I'`-specific failure mode as item 5's own text speculates - worth checking that angle specifically (was FACTOR=4/`'I'`-off ever compared against FACTOR=4/`'I'`-on under otherwise identical conditions to isolate the two?) before assuming item 5 needs its own separate explanation. Not resolved here - just flagging the connection for whoever picks either thread back up first.
+
+## 2026-09-29, later still: cross-reference - user's scope-measured timing chain gives the cross-core ISR-to-dsp_task hand-off (this file's own long-flagged jitter suspect) its first real number, and explains the FACTOR=4 burble from item 5's history without needing a new mechanism
+
+Full detail in moving_forward_notes.md's matching entry. Logged here specifically because the mechanism involved - the cross-core (Core 1 ISR -> Core 0 dsp_task) notify/wake hand-off - is the exact "leading jitter suspect" this file and its neighbor have referenced since the Fs-jitter-hunt work, never before pinned to a specific number. User's direct scope measurement: ISR itself ~14us, ISR-start-to-dsp_task-start ~21.5us total (~7.5us of that is pure hand-off beyond the ISR's own work), dsp_task busy ~42us.
+
+**Relevant to this file's own open item 5** (the 2026-08-31 "`'I'` makes two-tone stability audibly worse" finding, and this file's 2026-09-29 speculation that it might be the same wake-rate "burble" confirmed 2026-09-07 rather than a distinct fifth failure mode): this new timing breakdown makes that speculation much more concrete. At `ENVELOPE_INTERP_FACTOR=4` the fast-tick period is 15.625us; the ISR alone (14us) plus its own ~7.5us hand-off gap already totals ~21.5us - more than the ENTIRE fast-tick period, before any DSP work happens. That's a sufficient, first-principles explanation for a burble at FACTOR=4 on its own, with no need to invoke anything specific to the interpolation arithmetic or to null-crossing behavior. Strengthens (does not prove) the case that item 5's finding and the 2026-09-07 burble are the same underlying timing-budget problem, not two separate things.
+
+**Not new null-bias work** - no change to the null-crossing `atan2` mechanism itself. Logged purely for the cross-reference and because this file carries the project's most detailed history of the cross-core jitter investigation.
+
+## 2026-09-29, later still: cross-reference - the intr_priority=3 fix (this file's own Fs-jitter-hunt work) directly answers whether a bare 64kHz ISR can dispatch cleanly, separate from the cross-core hand-off question
+
+Full detail in moving_forward_notes.md's matching entry. Logged here because the evidence that answered the user's "would the 64k ISR even work regardless of what it does?" question is this file's OWN prior Fs-jitter-hunt finding: pin5 (gptimer alarm ISR entry, Core 1) occasionally stretching from a 15.625us nominal period to ~19us, tracked to same-priority queuing against the ADC continuous driver's own ISR (also Core 1) - fixed via `gptimer_config_t.intr_priority = 3`, confirmed to tighten pin5 to +/-0.5us. That fix is unconditional (not gated on `ENVELOPE_INTERP_FACTOR`), so it's already protecting any future FACTOR=4 attempt at the dispatch layer.
+
+**Distinct from, and does not resolve, this file's own open cross-core hand-off thread** (the ~7.5us Core1-ISR-to-Core0-dsp_task notify latency from the entry two above this one) - that's a FreeRTOS wake-latency mechanism, not an interrupt-dispatch-contention mechanism, and the intr_priority fix has no bearing on it. Both are real, both matter, and they're independent enough that solving one says nothing about the other - noted here so a future session doesn't conflate "the ISR fires on time" with "the ISR's effects reach dsp_task on time."
+
+## 2026-09-29, later still: cross-reference - confirmed the FACTOR==1 guard's crash risk is real and specific (envelope_output_write_pwm() has both v1 and v2's exact hazards), and the proposed fix also happens to be the same fix for this file's own item 5
+
+Full detail in moving_forward_notes.md's matching entry. Logged here because the proposed fix's step 3 (gate the cross-core notify to full-tick boundaries only) is the same change that would test this file's open item 5 speculation (that the 2026-08-31 "'I' audibly worse" finding is the same wake-rate burble as 2026-09-07, not a distinct fifth failure mode) - if that gating fix resolves the interpolation instability cleanly, it retroactively confirms item 5 and the 2026-09-07 burble were the same mechanism all along.
+
+Not new null-crossing work - purely a design/engineering thread, logged for the cross-reference per this project's practice of keeping both files in sync on anything touching the interpolation/timing seam.
+
+## 2026-09-29, later still: cross-reference - the staged FACTOR>1 fix is now implemented, NOT yet bench-tested; this is the concrete test that would confirm or refute item 5's possible connection to the 2026-09-07 wake-rate burble
+
+Full implementation detail in moving_forward_notes.md's matching entry. Logged here because this is now a real, buildable test of the open item 5 speculation two entries up (that the 2026-08-31 "'I' makes two-tone stability audibly worse" finding might be the same wake-rate burble confirmed 2026-09-07, not a distinct fifth failure mode): the notify is now gated to full-tick boundaries only, which is exactly the change that removes the wake-rate cost. Once the user builds and tests at FACTOR=4, if the burble is gone, that's strong (not certain - envelope interpolation itself still isn't in this build) retroactive evidence for that connection.
+
+Not new null-crossing work. No code in this file's own subject area (the `atan2`/null-bias mechanism) was touched.
+
+## 2026-09-29, later still: cross-reference - staged FACTOR>1 fix confirmed compiling and running clean on real hardware; item 5's burble question still open, not yet specifically re-tested
+
+Full detail in moving_forward_notes.md's matching entry. User confirmed the staged fix (previous entry) runs at FACTOR=4 with no regression on pure tones or the mic benchmark. Good first result, but NOT yet a specific test of item 5's speculation (that the 2026-08-31 "'I' audibly worse" finding is the same wake-rate burble as 2026-09-07) - that needs the original burble's own test conditions reproduced deliberately, not just general listening, and envelope interpolation itself still isn't part of this build. Leaving item 5 open until that specific test is run.
+
+## 2026-09-29, even later: cross-reference - added a temporary ISR-resident fixed-value PWM register write as a timing probe, ahead of the real envelope interpolation write; not directly item-5-related but shares this file's ISR-safety discipline
+
+Full detail in moving_forward_notes.md's matching entry. User asked to test whether the ISR can absorb one more register write per fast tick (a fixed/dummy duty value poked directly into the LEDC peripheral's registers via `soc/ledc_struct.h`, unconditionally on every tick, gated behind a new `ISR_PWM_FIXED_TEST_ENABLED` flag) as a deliberate precursor to building the real integer-only envelope fast-tick interpolation write - the feature that would actually realize the ZOH-imaging benefit this whole thread has been circling.
+
+Logged here purely for cross-reference/consistency (this project's practice of keeping both files in sync on anything touching the interpolation/timing seam) - this is engineering/timing work, not new null-crossing/`atan2` investigation, and doesn't directly bear on item 5's open "'I' worse = same wake-rate burble?" question. One indirect note: the exact LEDC register field names used (`duty.duty`, `conf1.duty_start`) are explicitly flagged as unverified against this project's installed SDK (no local toolchain available to check) - if the user's build fails here, that's a compile-time signal pointing at the exact field to fix, not a silent hardware risk, consistent with this project's general practice of preferring loud, diagnosable failures over silent ones when working in true ISR context.
+
+Item 5 itself remains open, unchanged by this entry - still needs the original 2026-09-07 burble's own test conditions (`'I'` off, FACTOR=4) reproduced deliberately to close out.
+
+## 2026-09-29, even later still: cross-reference - first bench result on the fixed-value ISR PWM write showed an unexplained multi-ms alternation, traced to a likely missing LEDC low-speed commit trigger, not a null-bias mechanism
+
+Full detail in moving_forward_notes.md's matching entry. User's scope on `RSET_MOD_LEDC_GPIO` (FACTOR=4, `ISR_PWM_FIXED_TEST_ENABLED=1`) showed the pin alternating ~6ms fixed-value / ~4.5ms real-waveform, far too slow to be explained by the expected 15.6us/62.5us tick-rate race between the new raw ISR write and dsp_task's own real envelope write. Leading hypothesis: the raw write was missing the LEDC low-speed-channel's second commit trigger (`conf0.low_speed_update`, required on ESP32-S2/S3 since these chips have no LEDC high-speed mode at all) alongside `conf1.duty_start` - without it, the raw write's requested duty change may often sit un-latched, letting dsp_task's own correctly-sequenced driver write keep showing through instead of a clean, dominant fixed value. Added the missing trigger; not yet re-tested on hardware.
+
+Logged here purely for cross-reference/consistency, per this project's practice of keeping both files in sync on anything touching the interpolation/timing seam - this is an LEDC-hardware-sequencing question, unrelated to the `atan2`/null-bias mechanism this file otherwise tracks. Item 5 (the 2026-08-31 "'I' worse" / 2026-09-07 burble connection) is untouched by this entry and remains open.
+
+## 2026-09-29, even later still: cross-reference - the LEDC low-speed-commit-trigger theory is refuted (period unchanged), real gap was the competing writer never being silenced; now fixed. Still not a null-bias mechanism, logged for consistency only
+
+Full detail in moving_forward_notes.md's matching entry. Second bench result (still ~10ms cycle, ~4.4ms fixed/~5.5ms real, after the `conf0.low_speed_update` fix) shows that fix didn't address the actual cause. Root cause instead: dsp_task's normal per-full-tick `envelope_output_write_pwm()` call was never gated off by `ISR_PWM_FIXED_TEST_ENABLED` in either prior build, so it kept fighting the new raw ISR write for the same register the whole time - fixed now by silencing that call at its single choke point while the test flag is active.
+
+Also explicitly re-confirmed from source (not assumed) that `SDM_COMPARISON_ENABLED=0`/`PWM_COMPARISON_ENABLED=1` in this build, ruling out a suspected alternate explanation (the SDM peripheral, which shares the same physical pin, actually driving the pin instead of LEDC).
+
+Logged here purely for cross-reference/consistency, per this project's practice of keeping both files in sync on anything touching the interpolation/timing seam - none of this bears on the `atan2`/null-bias mechanism this file otherwise tracks. Item 5 remains open and untouched by this thread.
+
+## 2026-09-29, even later still: cross-reference - fixed-value ISR PWM write test confirmed clean; real interpolation write still not built. Not a null-bias item
+
+Full detail in moving_forward_notes.md's matching entry. The single-writer fix (silencing `envelope_output_write_pwm()` while `ISR_PWM_FIXED_TEST_ENABLED` is on) resolved the ~10ms alternation - user reports it's "running well" now. Clarified for the user that this is still only a timing probe (a constant duty value, real envelope output actively suppressed), not the real fast-tick interpolation feature - that remains unbuilt.
+
+Logged for cross-reference/consistency only - no null-bias/`atan2` content here. Item 5 remains open and untouched.
+
+## 2026-09-29, even later still: cross-reference - fixed-value ISR PWM write test finally confirmed solid on real hardware; diagnostic branch closed out, real interpolation write is the next step
+
+Full detail in moving_forward_notes.md's matching entry. After a brief, likely-reflash-related false alarm ("seeing the old data" with the flag off), re-enabling `ISR_PWM_FIXED_TEST_ENABLED` reproduced the clean result: pin holds a solid constant level, system runs fine at FACTOR=4. This closes out the timing-probe question this branch was built to answer - a raw per-fast-tick register write fits the budget.
+
+Logged for cross-reference/consistency only - no null-bias/`atan2` content. Item 5 remains open and untouched by this entire branch.
+
+## 2026-09-29, even later still: cross-reference - real integer-only envelope fast-tick interpolation write (v6) built, not yet bench-tested. Not a null-bias mechanism
+
+Full design detail in moving_forward_notes.md's matching entry. New `ENVELOPE_ISR_INTERP_ENABLED` flag (`envelope_interp.h`) splits the work across task context (`envelope_output_isr_stage_step()`, float-safe, computes a Q4 fixed-point per-tick duty step once per full tick) and ISR context (`envelope_output_isr_fasttick_step()`, integer-only, `IRAM_ATTR`, raw LEDC register write every fast tick) - the successor to the `ISR_PWM_FIXED_TEST_ENABLED` diagnostic that validated the raw-write timing budget over the last several turns. Requires `AD9851_ISR_WRITE_ENABLED`; mutually exclusive with `ENVELOPE_INTERP_USE_HW_FADE`; bypasses the CATMULL_ROM/LINEAR/HOLD curve system and the `'I'` runtime toggle entirely (deliberate scope choice, documented in both files).
+
+Logged here purely for cross-reference/consistency, per this project's practice of keeping both files in sync on anything touching the interpolation/timing seam - none of this bears on the `atan2`/null-bias mechanism this file otherwise tracks. Item 5 remains open and untouched.
+
+## 2026-09-29, even later still: cross-reference - v6's first real compile attempt found two header-include-order bugs (config.h macros referenced before config.h was actually included), both fixed. Not a null-bias mechanism
+
+Full detail in moving_forward_notes.md's matching entry. First real-toolchain compile of the `ENVELOPE_ISR_INTERP_ENABLED` feature failed: `envelope_interp.h`'s new `#error` guard misfired (referenced `AD9851_ATTACHED`/`AD9851_ISR_WRITE_ENABLED` without including `config.h` itself, so some translation units saw them as undefined/0 regardless of their real values), and `envelope_output.cpp`'s new `soc/ledc_struct.h` include was skipped for the same class of reason (checked `ENVELOPE_ISR_INTERP_ENABLED` before the include that defines it had run). Fixed by having `envelope_interp.h` include `config.h` itself (matching `envelope_output.h`'s existing pattern) and reordering `envelope_output.cpp`'s includes.
+
+Logged for cross-reference/consistency only - a header-include-order bug, not `atan2`/null-bias content. Item 5 remains open and untouched.
+
+## 2026-09-29, even later still: cross-reference - v6 real interp write is a confirmed real-hardware regression (acoustic two-tone jitter, cycles OK-to-bad over seconds), reverted. Not yet understood; not directly a null-bias item but worth a cross-reference given the cyclic-degradation shape
+
+Full detail in moving_forward_notes.md's matching entry. First real acoustic (speaker>mic) test of `ENVELOPE_ISR_INTERP_ENABLED` shows worse two-tone jitter that cycles from OK to bad over a few seconds - a much slower period than anything the new per-tick/per-full-tick math directly touches. Reverting to `ENVELOPE_ISR_INTERP_ENABLED=0` (the only switch that needs to change) rather than debugging further this session.
+
+Also flagged: the user reported 'I' still changing "delay required" on this build, which is inconsistent with the new branch's own design (placed before the `s_enabled` check, so 'I' should be a complete no-op for PWM while this flag is on) - re-verified via code read, no other code path ties 'I' to anything else. Not resolved; could be a leftover assumption from pre-v6 behavior rather than a fresh observation, or could point at a real bug in the branch. Worth checking first if this feature is revisited.
+
+Logged for cross-reference primarily because a multi-second cyclic degradation pattern is a distinctive enough shape that it's worth having on record alongside this file's own null-bias timing investigations, even though nothing here has been tied to the `atan2`/null-bias mechanism specifically. Item 5 remains open and separately unrelated.
+
+## 2026-09-29, even later still: cross-reference - the regression logged above was actually run at ENVELOPE_INTERP_FACTOR=1, not 4; it tested the new ISR-write mechanism at 16kHz, not 64kHz interpolation
+
+Full detail in moving_forward_notes.md's matching correction entry. User's newly-uploaded config files, diffed against this repo, showed `ENVELOPE_INTERP_FACTOR` was 1 (not 4 as the prior entry asserted) during the acoustic regression test - confirmed by `git show` across every v6-era commit, all of which left it at 1. At FACTOR=1 the new ISR path applies its full duty delta in a single jump once per real 16kHz tick, same value/rate as the pre-v6 write - only the write MECHANISM changed (raw LEDC peripheral-struct poke from ISR context vs. `ledc_set_duty()`/`ledc_update_duty()` from task context). So the cyclic jitter finding is real but was never a test of interpolation quality; repo now updated to FACTOR=4 + `ENVELOPE_ISR_INTERP_ENABLED=1` for a genuine first test. Not a null-bias mechanism itself - logged here only to keep this file's cross-reference in sync with the corrected picture.
+
+## 2026-09-30: cross-reference - first genuine FACTOR=4 run shows PWM duty too high; leading suspect is the raw-register Q4 shift, not a null-bias mechanism
+
+Full detail in moving_forward_notes.md's matching entry. Not an envelope-null-timing effect - the reported symptom (duty systematically too high, correctable by dialing down the unrelated linear offset/scale knobs) points at `envelope_output_isr_stage_step()`/`_isr_fasttick_step()`'s unverified `<<4` fixed-point assumption when writing the raw LEDC duty register, not at anything this file's atan2/null-bias work touches. Logged here only for cross-reference completeness while v6 is under active bring-up.
+
+## 2026-09-30, later: cross-reference - found and fixed a real bug blocking the scaling test above (duty-override mode was never checked by the new ISR write)
+
+Full detail in moving_forward_notes.md's matching entry. Not a null-bias mechanism - `envelope_output_isr_fasttick_step()` was overwriting the 'd' duty-override path's writes every fast tick because it never checked `s_duty_override_enabled`, unlike every other write function in that module. Fixed, plus a reseed-on-exit helper so the ISR's accumulator doesn't resume from a stale value after override mode ends. Logged here only so this file's cross-reference stays current; the scaling comparison this was blocking can now actually be run.
+
+## 2026-09-30, later still: cross-reference - the `<<4` scaling suspect flagged earlier is now confirmed and fixed; real envelope content was pinning PWM to max
+
+Full detail in moving_forward_notes.md's matching entry. Not a null-bias mechanism - confirms the hypothesis two entries back: `envelope_output_isr_fasttick_step()` was writing its Q4-scaled accumulator directly into the LEDC duty register, saturating the output high for any envelope above ~1/16 of full scale (real hardware: "stuck at max env level" on normal two-tone content). Fixed by converting back to native duty units before the hardware write; the identical bug in the currently-dormant `ISR_PWM_FIXED_TEST_ENABLED` diagnostic was fixed too. Logged here only for cross-reference completeness.
+
+## 2026-09-30, later still: cross-reference - "mostly pinned to zero" after the fix above is NOT a new bug, just stale env_pwm_offset/env_pwm_scale left over from compensating for it
+
+Full detail in moving_forward_notes.md's matching entry. Not a null-bias mechanism, and not a code bug at all - a 'P' live-settings dump showed `env_pwm_offset=-0.02`/`env_pwm_scale=-0.02` still active, almost certainly left over from manually compensating for the now-fixed `<<4` saturation bug. With both negative, the linear offset/scale mapping produces a negative result for virtually any real envelope value, which clamps to exactly 0 - fully explaining the symptom with no code change. Logged here only for cross-reference completeness.
+
+## 2026-09-30, later still: cross-reference - still very low/near-zero output after confirming sane offset/scale via Preset 1; leading (unconfirmed) hypothesis is duty-override left ON, not a null-bias mechanism
+
+Full detail in moving_forward_notes.md's matching entry. Not a null-bias mechanism either way. With `env_pwm_offset=0.20`/`env_pwm_scale=0.90` confirmed sane via a fresh 'P' dump under Preset 1, the previous entry's explanation no longer applies, yet output is still reported very low. Leading unconfirmed hypothesis: duty-override ('d') was left on from earlier testing - `PersistentSettings`/preset loading has no field for it and never clears it, and this session's own duty-override fix means the ISR write path now correctly locks out while it's on. Awaiting confirmation from the user before treating this as resolved or continuing to hunt for a third code bug.
+
+## 2026-09-30, later still: cross-reference - duty-override hypothesis was wrong; found and fixed a real telescoping-math bug (small consecutive deltas truncated to a permanently-lost zero step)
+
+Full detail in moving_forward_notes.md's matching entry. Not a null-bias mechanism, but a genuinely interesting parallel in shape to this file's own work: `envelope_output_isr_stage_step()`'s per-tick integer step calculation discarded its division remainder every tick instead of carrying it forward, producing an unbounded random-walk drift in the ISR's duty accumulator (proven false the original comment's "never accumulates" claim, which had only been checked against one coincidentally-self-canceling example, not proven in general - the same kind of insufficiently-verified claim this file has run into before with other rounding/bias assumptions). Fixed with standard Bresenham/DDA-style error diffusion (carry the remainder into the next tick's numerator). Logged here only for cross-reference completeness - not an atan2/null-bias mechanism.
+
+## 2026-09-30, later still: cross-reference - carry-forward fix didn't resolve the low-output symptom; added a diagnostic 'b' serial command rather than guess at a fourth hypothesis blind
+
+Full detail in moving_forward_notes.md's matching entry. Not a null-bias mechanism - after three real bugs found and fixed today in `ENVELOPE_ISR_INTERP_ENABLED`'s PWM path (duty-override guard, `<<4` scaling, carry-forward telescoping), real hardware still reports "the same low level" on Preset 1 with duty-override confirmed off. Re-checked project-wide for any other LEDC duty-register writer and re-confirmed the ISR fast-tick write and the 64kHz timer math are both genuinely unconditional/correct by reading - found nothing further by static inspection alone. Rather than propose a fourth unverified fix, added `envelope_output_isr_interp_get_debug()` and a new `'b'` serial command exposing the ISR's internal accumulator/step/carry state plus a live `ledc_get_duty()` hardware readback, so the next report can carry actual numbers instead of a qualitative description. Logged here only for cross-reference completeness - no atan2/null-bias content involved.
+
+## 2026-09-30, later still: cross-reference - first 'b' readout shows the ISR accumulator frozen and hw duty not tracking it; leading (unconfirmed) reading is duty-override ON despite the earlier "off" report; ISR liveness counters added to 'b'
+
+Full detail in moving_forward_notes.md's matching entry. Not a null-bias mechanism. `accum_q4` constant at 9490 across all samples with `step_q4` ~-456, and `hw_duty_now`=96 (an exact multiple of 16, the 'N' key's step) not matching `accum>>4`, together suggest the ISR write path is locked out by the duty-override guard - unconfirmed, since it contradicts the user's own "off" report. Added call counters and the override flag to 'b' to settle it with data.
+
+## 2026-09-30, later still: cross-reference - 'b' readout showed hw duty = accum/16; my earlier ">>4 to native" change was wrong and is reverted (duty.duty has 4 fractional bits)
+
+Full detail in moving_forward_notes.md's matching entry. Not a null-bias mechanism. Also: the frozen-accumulator first readout was most likely duty-override genuinely ON (unproven); the second batch, override off, shows the ISR running normally.
+
+## 2026-09-30, later still: cross-reference - 'b' readout on the restored-Q4 build shows the ISR at the full 64kHz rate, not blocked by the override guard, and hw duty tracking the accumulator
+
+Full detail in moving_forward_notes.md's matching entry. Not a null-bias mechanism. Supports the ">>4 reverted" correction; the earlier step_q4 oddity is most likely phase-locked sampling (20ms snapshots vs a periodic two-tone) - unproven. Analog output level/IMD still needs a scope check.
+
+## 2026-09-30, later still: cross-reference - user confirms two-tone and mic presets now scale correctly on v6 at FACTOR=4; noise/IMD evaluation under way
+
+Full detail in moving_forward_notes.md's matching entry. Not a null-bias mechanism; level/scaling result only, noise/IMD not yet evaluated.
+
+## 2026-09-30, later still: cross-reference - analysis of the v6 700/1900 I/Q capture: a ~102.2Hz sideband comb on the IMD lines (candidate: LEDC carrier really ~63898Hz, beating the 64kHz write tick) and two unidentified 1200Hz-spaced families
+
+Full detail in moving_forward_notes.md's matching entry. Not a null-bias mechanism; logged for cross-reference. The 102.2Hz attribution is a numerical match to a divider-rounding hypothesis, not yet confirmed by an `ledc_get_freq()` readback.
+
+## 2026-09-30, later still: cross-reference - CARRIER_HZ 14200160 -> 14200162 (AD9851 ~2.1Hz low)
+
+Full detail in moving_forward_notes.md's matching entry. Not a null-bias mechanism; absolute-frequency calibration only, not yet re-measured.
+
+## 2026-09-30, later still: cross-reference - ideas for the comb's origin: 9-bit LEDC would give an exact 64000Hz (candidate fix for the 102.2Hz family, unconfirmed); +/-16kHz families still unidentified
+
+Full detail in moving_forward_notes.md's matching entry. Not a null-bias mechanism. AD9851 temperature drift (user: well within spec) is not treated as a cause of fixed-offset lines.
+
+## 2026-09-30, later still: cross-reference - ledc_get_freq() readback added; user reports the comb persists under duty override (points away from the envelope write path)
+
+Full detail in moving_forward_notes.md's matching entry. Not a null-bias mechanism. Also recorded: subjective report of PWM-ISR timing jitter and more variable low-level noise since the 64k ISR - unquantified.
+
+## 2026-09-30, later still: cross-reference - first [timing] check at FACTOR=4 with the v6 ISR: overruns=0, max_gap_us 69-70, stale_commits 3-4; says nothing about the PWM ISR's own jitter
+
+Full detail in moving_forward_notes.md's matching entry. Not a null-bias mechanism (the `null_bias` lines in that paste are from mic mode and not meaningful there). LEDC-divider hypothesis still untested - the ledc_get_freq output was not in the paste.
+
+## 2026-09-30, later still: cross-reference - 13.6us AD9851 ISR write accounted for (122 GPIO stores at ~70ns/store is ~8.5us of ~10.6us write; rest of the ISR ~2-4us); it delays the dsp_task wake one-for-one
+
+Full detail in moving_forward_notes.md's matching entry. Not a null-bias mechanism. The per-store cost is inferred from the driver's own "~7MHz-equivalent" comment, not re-measured.
+
+## 2026-09-30, later still: cross-reference - ledc_get_freq() = 63898 Hz (beat -102 Hz vs the 64 kHz write tick)
+
+Full detail in moving_forward_notes.md's matching entry. Not a null-bias mechanism as far as known; it is a candidate source for the +/-102.2 Hz sidebands. The frequency match is shown; causation is not (needs a duty-override capture and/or an exact-divider A/B).
+
+## 2026-09-30, later still: cross-reference - audit of resampler vs old integer-bleed documentation
+
+The resampler change is documented (2026-09-20/21 entries) but no quantitative before/after and no 'spurious present with both methods' finding was logged. Full detail in moving_forward_notes.md's matching entry. User's recollection that both had the spurious is recorded as unverified.
+
+## 2026-09-30, later still: cross-reference - ISR_NOTIFY_BEFORE_AD9851_ENABLED experiment added (wake dsp_task before the AD9851 write)
+
+Full detail in moving_forward_notes.md's matching entry. Not a null-bias change. Main caveat: it shifts envelope-write vs AD9851-latch relative timing by ~10us, so judge it on IMD/noise as well as timing margin. Not compiled or bench-tested.
+
 ## Where to resume
 
 The null-crossing bias itself is well-characterized and, per the "likely

@@ -104,6 +104,11 @@
 #include "esp_timer.h"
 #include "esp_rom_sys.h"
 #include "soc/gpio_struct.h"   // GPIO.out_w1ts/w1tc - see on_timer_alarm()'s Fs jitter hunt toggle
+#include "soc/ledc_struct.h"   // LEDC.channel_group[].channel[] raw registers - see ISR_PWM_FIXED_TEST_ENABLED
+                                // in config.h and on_timer_alarm()'s own comment: same "raw struct instead
+                                // of the driver call" idiom as GPIO above, needed because ledc_set_duty()/
+                                // ledc_update_duty() are NOT ISR-safe (general driver calls - see
+                                // envelope_output_write_pwm()'s own comment for why that matters here).
 
 // Shared compile-time configuration - must come before any other project
 // header (gates #if blocks in several of them, e.g. PWM_COMPARISON_ENABLED
@@ -137,12 +142,22 @@
 // visible regardless of the IDE's Core Debug Level setting. ssb_dsp.c has
 // its own separate TAG for its internal ESP_LOG calls.)
 
-// See config.h's AD9851_ISR_WRITE_ENABLED comment for why this guard
-// exists and can't live in config.h itself (ENVELOPE_INTERP_FACTOR isn't
-// known there - envelope_interp.h is included after config.h).
-#if AD9851_ATTACHED && AD9851_ISR_WRITE_ENABLED && ENVELOPE_INTERP_FACTOR != 1
-#error "AD9851_ISR_WRITE_ENABLED (config.h) requires ENVELOPE_INTERP_FACTOR==1 (envelope_interp.h) - see config.h's comment on this flag for why."
-#endif
+// 2026-09-29: this used to be a hard #error requiring ENVELOPE_INTERP_
+// FACTOR==1 - see config.h's AD9851_ISR_WRITE_ENABLED comment for the
+// original reasoning (the ISR couldn't tell which firing was a true
+// full-tick boundary, so it would have committed stale data on 3-of-4
+// firings at FACTOR>1). Lifted: on_timer_alarm() below now tracks its own
+// local full-tick counter (s_isr_full_tick_counter) and gates both the
+// AD9851 write and the notify-to-dsp_task on it, so this is correct at any
+// FACTOR - at FACTOR==1 the counter wraps every firing and behavior is
+// bit-for-bit identical to before this change. See moving_forward_notes.md's
+// 2026-09-29 entry (the one after "user hit the ENVELOPE_INTERP_FACTOR==1
+// #error guard") for the full before/after reasoning, and on_timer_alarm()'s
+// own comment for the mechanism. Envelope/PWM interpolation itself is
+// NOT part of this fix - it stays exactly as coarse as FACTOR==1 gave it
+// (held between full ticks) until envelope_interp's own ISR-safe,
+// integer-only fast-tick write is built - this only unblocks AD9851 timing
+// and the wake-rate cost, deliberately staged separately.
 
 static TaskHandle_t s_dsp_task;
 
@@ -212,7 +227,146 @@ static bool IRAM_ATTR on_timer_alarm(gptimer_handle_t timer, const gptimer_alarm
     GPIO_FAST_CLR(TIMING_DEBUG_GPIO_ISR);
 #endif
 
+#if ISR_PWM_FIXED_TEST_ENABLED
+    // TEMPORARY DIAGNOSTIC (see config.h's ISR_PWM_FIXED_TEST_ENABLED
+    // comment for the full reasoning/warnings - this overrides real
+    // envelope output with a constant while active). Deliberately
+    // UNCONDITIONAL: runs on EVERY fast tick regardless of is_full_tick,
+    // AD9851_ISR_WRITE_ENABLED, or anything else this ISR does, because
+    // the point is to test the worst-case "a register write on every
+    // single fast tick" timing cost in isolation, as the precursor step
+    // before the real integer-only envelope fast-tick write is built.
+    //
+    // Raw peripheral struct write, NOT ledc_set_duty()/ledc_update_duty()
+    // - those are general ESP-IDF driver calls, confirmed NOT ISR-safe
+    // (see envelope_output_write_pwm()'s own comment and envelope_
+    // interp.h's v1 history: a general driver call from true ISR context
+    // is exactly what rebooted v1). Same "raw struct instead of the
+    // driver call" idiom as GPIO.out_w1ts/w1tc above, applied to LEDC via
+    // soc/ledc_struct.h.
+    //
+    // UNVERIFIED FIELD NAMES: LEDC.channel_group[...].channel[...].duty.
+    // duty, .conf1.duty_start, and .conf0.low_speed_update are from
+    // general ESP32/S2/S3 LEDC peripheral knowledge, NOT checked against
+    // this project's exact installed ESP-IDF/Arduino-ESP32 SDK version
+    // (no local toolchain available to verify this in the environment
+    // this was written in). The "<< 4" mirrors the LEDC hardware duty
+    // register's known 4 fractional bits below the integer duty
+    // resolution on this SoC family - also unverified against this exact
+    // SDK for this exact duty_resolution setting. If this fails to
+    // compile, the compiler error will name the exact field that's wrong
+    // for this SDK version - treat that as a diagnostic pointing at the
+    // fix, not a dead end.
+    //
+    // 2026-09-29 CORRECTION, first-bench-result-driven: the initial
+    // version of this block only set duty.duty + conf1.duty_start, and
+    // real hardware showed the pin alternating between the fixed test
+    // value ("constant", ~6ms stretches) and the REAL modulated envelope
+    // ("old waveform", ~4.5ms stretches) - roughly two orders of
+    // magnitude slower than either the 15.6us fast-tick or 62.5us
+    // full-tick period, so it isn't explained by a simple per-tick race
+    // between this write and dsp_task's own envelope_output_write_pwm().
+    // Leading hypothesis: on ESP32-S2/S3, EVERY LEDC channel is a
+    // "low-speed" channel (these chips have no high-speed LEDC mode at
+    // all - SOC_LEDC_SUPPORT_HS_MODE=0), and low-speed channels need a
+    // SECOND, separate commit trigger beyond duty_start before a new duty
+    // value actually latches into the active register: conf0.
+    // low_speed_update=1. This matches the ESP-IDF driver's own
+    // ledc_update_duty() internals as best recalled (duty_start, THEN
+    // low_speed_update) - without it, a raw duty_start write may sit
+    // pending/ineffective, so what actually landed on the pin was
+    // whatever the LAST successfully-committed write was (which could be
+    // this write on a lucky cycle, or leftover from dsp_task's own -
+    // correctly formed, driver-based - write), rather than genuinely
+    // alternating envelope content driving it. Added the missing trigger
+    // below - STILL UNVERIFIED against this exact SDK, same caveat as
+    // the other two field names above. If the pin now holds the fixed
+    // test value SOLIDLY (no more "old waveform" windows) once flashed,
+    // that's good evidence this was the missing piece; if it's still
+    // intermittent, that theory is wrong and something else (ISR not
+    // actually running steadily at 64kHz for multi-ms stretches, most
+    // likely candidate: some other interrupt-disabling activity
+    // elsewhere in the system) needs to be hunted instead.
+    //
+    // 2026-09-30 CORRECTION: removed the "<< 4" this line originally had.
+    // envelope_output_isr_fasttick_step() (envelope_output.cpp) used the
+    // identical assumption ("hardware wants the native duty count
+    // pre-shifted left by 4") and real hardware proved it wrong - with
+    // ENVELOPE_ISR_INTERP_ENABLED's real envelope write, normal (non-
+    // duty-override) content pinned the PWM "stuck at max env level" for
+    // anything above ~1/16 of full scale, exactly the saturation you'd
+    // expect writing a >1023 value into a comparator that only counts
+    // 0..1023 for this configured resolution/rate. ISR_PWM_FIXED_TEST_DUTY
+    // is documented as a plain 0..1023 native value (see config.h) - this
+    // line was writing 16x that into the register the whole time this
+    // diagnostic has existed. Its own bench results ("constant level,
+    // running OK") only ever checked TIMING/stability, never the absolute
+    // duty percentage against a known reference, so this went unnoticed.
+    // Fixed here for consistency/correctness even though this flag is
+    // currently 0 (dormant) - see moving_forward_notes.md's matching
+    // 2026-09-30 entry for the full story and the envelope_output.cpp fix
+    // this mirrors.
+    LEDC.channel_group[LEDC_LOW_SPEED_MODE].channel[RSET_MOD_LEDC_CH].duty.duty = ((uint32_t)ISR_PWM_FIXED_TEST_DUTY) << 4;   // 2026-09-30: << 4 RESTORED - duty.duty has 4 fractional bits, see envelope_output.cpp's SECOND CORRECTION
+    LEDC.channel_group[LEDC_LOW_SPEED_MODE].channel[RSET_MOD_LEDC_CH].conf1.duty_start = 1;
+    LEDC.channel_group[LEDC_LOW_SPEED_MODE].channel[RSET_MOD_LEDC_CH].conf0.low_speed_update = 1;
+#endif
+
+    // 2026-09-29: v6 real envelope fast-tick write (ENVELOPE_ISR_INTERP_
+    // ENABLED, envelope_interp.h) - the successor to the
+    // ISR_PWM_FIXED_TEST_ENABLED probe right above, built once that probe
+    // confirmed a raw per-fast-tick LEDC write fits the timing budget.
+    // Called UNCONDITIONALLY, no #if here by design: envelope_output_isr_
+    // fasttick_step() (envelope_output.cpp) compiles to a plain no-op
+    // when ENVELOPE_ISR_INTERP_ENABLED is 0, so this call site never needs
+    // its own guard, matching envelope_output_write_sdm()'s own always-
+    // callable-no-op-when-disabled convention elsewhere in this codebase.
+    // Applies whatever per-tick duty step dsp_task last staged (envelope_
+    // output_isr_stage_step(), called from envelope_interp_on_full_tick()
+    // on full ticks only) and writes the LEDC duty register directly -
+    // integer-only, IRAM_ATTR, no driver calls - see that function's own
+    // comment (envelope_output.h) for the fixed-point design. Runs on
+    // EVERY fast tick, same reasoning as ISR_PWM_FIXED_TEST_ENABLED's own
+    // write above: the actual envelope interpolation only means anything
+    // if it updates faster than SAMPLE_RATE_HZ.
+    envelope_output_isr_fasttick_step();
+
 #if AD9851_ATTACHED && AD9851_ISR_WRITE_ENABLED
+    // 2026-09-29: local full-tick gate, added so this works correctly at
+    // ENVELOPE_INTERP_FACTOR>1, not just FACTOR==1 (see this file's own
+    // #error-removal comment near the top and config.h's AD9851_ISR_WRITE_
+    // ENABLED comment for the full history). Plain integer counter,
+    // increment/compare/wrap only - deliberately the exact same shape as
+    // ENVELOPE_INTERP_USE_HW_FADE's own counter further down, which already
+    // proved this pattern is safe in true ISR context on this chip (no
+    // float, no driver call). At FACTOR==1 this is a no-op: the counter
+    // wraps every single firing, so is_full_tick is unconditionally true
+    // and everything below behaves bit-for-bit as it did before this
+    // change.
+    //
+    // NOT the same mechanism as ENVELOPE_INTERP_USE_HW_FADE, even though
+    // both end up wanting "only touch things on a true full-tick boundary"
+    // - that one is about the LEDC hardware fade engine for envelope
+    // (found measurably worse on real hardware, disabled today); this one
+    // is purely about AD9851 write timing and the notify-rate cost. Kept
+    // as two independent counters/mechanisms rather than merged, so a
+    // future revert of one can't accidentally disturb the other.
+    //
+    // CHIRP-mode caveat (same one ENVELOPE_INTERP_USE_HW_FADE's own
+    // comment documents, for the identical reason): CHIRP mode's fast
+    // per-tick waveform generation only runs when dsp_task is actually
+    // woken. Gating the notify to full-tick boundaries below means CHIRP
+    // mode is capped to SAMPLE_RATE_HZ (16kHz) even when
+    // ENVELOPE_INTERP_FACTOR>1 - it can't reach its intended 20kHz sweep
+    // range under this flag. Not fixed here, just flagged so it isn't
+    // rediscovered blind.
+    static uint32_t s_isr_full_tick_counter = 0;
+    s_isr_full_tick_counter++;
+    bool is_full_tick = false;
+    if (s_isr_full_tick_counter >= ENVELOPE_INTERP_FACTOR) {
+        s_isr_full_tick_counter = 0;
+        is_full_tick = true;
+    }
+
     // 2026-09-19: write-time-jitter fix, folded in from minimal_fs_test_
     // step6_isr_write after real-hardware bench confirmation - see
     // config.h's AD9851_ISR_WRITE_ENABLED comment and
@@ -243,7 +397,25 @@ static bool IRAM_ATTR on_timer_alarm(gptimer_handle_t timer, const gptimer_alarm
     // bit-bang transport is a fundamentally different, safer case (no
     // driver call, no flash-residency ambiguity) than LEDC/SDM, which is
     // why only this leg moved into the ISR.
-    if (s_pending_valid) {
+    //
+    // 2026-09-29: now gated on is_full_tick (see above) - only commit on a
+    // true full-tick boundary. On the ENVELOPE_INTERP_FACTOR-1 fast ticks
+    // in between, do nothing: the AD9851 simply holds its last-written
+    // frequency, which is the correct behavior (the phase/frequency path
+    // was never meant to be interpolated the way envelope is).
+#if ISR_NOTIFY_BEFORE_AD9851_ENABLED
+    // 2026-09-30: see config.h's ISR_NOTIFY_BEFORE_AD9851_ENABLED comment.
+    // The value to write is SNAPSHOTTED here (before dsp_task is woken) and
+    // the actual bit-bang happens after vTaskNotifyGiveFromISR() below. The
+    // snapshot matters: once dsp_task is running concurrently on Core 0 it
+    // will eventually restage s_pending_tx_freq at the end of its tick, and
+    // the write must use THIS tick's value regardless of how quickly that
+    // happens. The staleness check and s_isr_last_seen_seq update stay here,
+    // exactly where they were, so stale_commits keeps its meaning.
+    bool     do_ad9851_write        = false;
+    uint32_t ad9851_freq_snapshot   = 0;
+#endif
+    if (is_full_tick && s_pending_valid) {
         if (s_stage_seq == s_isr_last_seen_seq) {
             // Staging-race: dsp_task hasn't staged a fresh value since our
             // last commit - this write is about to reuse a value more
@@ -253,7 +425,12 @@ static bool IRAM_ATTR on_timer_alarm(gptimer_handle_t timer, const gptimer_alarm
             s_stale_commit_count++;
         }
         s_isr_last_seen_seq = s_stage_seq;
+#if ISR_NOTIFY_BEFORE_AD9851_ENABLED
+        ad9851_freq_snapshot = s_pending_tx_freq;
+        do_ad9851_write = true;
+#else
         carrier_output_set_freq_dev_raw(s_pending_tx_freq);
+#endif
     }
 #endif
 
@@ -278,7 +455,20 @@ static bool IRAM_ATTR on_timer_alarm(gptimer_handle_t timer, const gptimer_alarm
     // being a plain synchronous call from dsp_task (envelope_interp.cpp),
     // same as the PWM leg.
     BaseType_t high_task_woken = pdFALSE;
-#if ENVELOPE_INTERP_USE_HW_FADE
+#if AD9851_ATTACHED && AD9851_ISR_WRITE_ENABLED
+    // 2026-09-29: reuses is_full_tick computed above (AD9851_ISR_WRITE_
+    // ENABLED's own full-tick counter) - dsp_task is now woken only on
+    // true full-tick boundaries, same property ENVELOPE_INTERP_USE_HW_FADE
+    // provides independently below for its own reason. This is also the
+    // fix for the wake-rate "burble" confirmed on real hardware 2026-09-07
+    // (waking dsp_task 64,000 times/sec, even doing nothing on most of
+    // them, was itself costly) - see dsp_task's own is_full_tick check
+    // ("ENVELOPE_INTERP_USE_HW_FADE || (AD9851_ATTACHED &&
+    // AD9851_ISR_WRITE_ENABLED)") for the task-side half of this.
+    if (is_full_tick) {
+        vTaskNotifyGiveFromISR(s_dsp_task, &high_task_woken);
+    }
+#elif ENVELOPE_INTERP_USE_HW_FADE
     // 2026-09-08: see envelope_interp.h's ENVELOPE_INTERP_USE_HW_FADE
     // comment for the full reasoning. The gptimer hardware still fires at
     // its usual ENVELOPE_INTERP_FACTOR x SAMPLE_RATE_HZ (64kHz) rate,
@@ -298,8 +488,22 @@ static bool IRAM_ATTR on_timer_alarm(gptimer_handle_t timer, const gptimer_alarm
 #else
     vTaskNotifyGiveFromISR(s_dsp_task, &high_task_woken);
 #endif
+#if AD9851_ATTACHED && AD9851_ISR_WRITE_ENABLED && ISR_NOTIFY_BEFORE_AD9851_ENABLED
+    // 2026-09-30: deferred AD9851 write - see config.h's
+    // ISR_NOTIFY_BEFORE_AD9851_ENABLED comment. dsp_task has already been
+    // woken above, so it runs in parallel with this bit-bang instead of
+    // waiting for it. Same integer-only, ISR-safe call as before, same value
+    // (snapshotted above).
+    if (do_ad9851_write) {
+        carrier_output_set_freq_dev_raw(ad9851_freq_snapshot);
+    }
+#endif
 #if TIMING_DEBUG_ENABLED
-    GPIO_FAST_SET(TIMING_DEBUG_GPIO_ISR);   // rising edge = notify call done, about to return
+    // NOTE (2026-09-30): with ISR_NOTIFY_BEFORE_AD9851_ENABLED the low pulse
+    // now ends after the AD9851 write (it used to end just after the notify),
+    // so its width is still "whole full-tick ISR body" but the notify edge is
+    // no longer visible inside it.
+    GPIO_FAST_SET(TIMING_DEBUG_GPIO_ISR);   // rising edge = ISR body done (was: notify call done), about to return
 #endif
     return high_task_woken == pdTRUE;
 }
@@ -413,8 +617,9 @@ static void IRAM_ATTR dsp_task(void* arg)
         // the exact boundary the coalesced count landed - so a bad
         // overrun still costs the one sample it made unrecoverable, but
         // never cascades into delaying subsequent ones too.
-#if ENVELOPE_INTERP_USE_HW_FADE
-        // 2026-09-08: under ENVELOPE_INTERP_USE_HW_FADE, on_timer_alarm()
+#if ENVELOPE_INTERP_USE_HW_FADE || (AD9851_ATTACHED && AD9851_ISR_WRITE_ENABLED)
+        // 2026-09-08 (ENVELOPE_INTERP_USE_HW_FADE), extended 2026-09-29 to
+        // also cover AD9851_ISR_WRITE_ENABLED: under EITHER, on_timer_alarm()
         // (above) only ever notifies dsp_task on true full-tick
         // boundaries (1-in-ENVELOPE_INTERP_FACTOR real alarms) - every
         // wake IS a full tick, there's no separate "interp tick" wake
@@ -423,8 +628,12 @@ static void IRAM_ATTR dsp_task(void* arg)
         // real alarm) and would silently divide the full-tick rate by
         // ENVELOPE_INTERP_FACTOR AGAIN if left active here - bypassed
         // entirely instead of trying to adapt it, since there's nothing
-        // left for it to compute. CHIRP mode is NOT compatible with this
-        // flag (see envelope_interp.h's own comment) - don't combine.
+        // left for it to compute (fast_tick_count itself still accumulates
+        // via elapsed_fast_ticks above, but nothing downstream reads it
+        // once this branch is taken - harmless, just unused). CHIRP mode
+        // is NOT compatible with either flag, for the same reason (see
+        // envelope_interp.h's own comment and on_timer_alarm()'s
+        // AD9851_ISR_WRITE_ENABLED comment) - don't combine.
         bool is_full_tick = true;
 #else
         uint32_t fast_tick_group = fast_tick_count / ENVELOPE_INTERP_FACTOR;

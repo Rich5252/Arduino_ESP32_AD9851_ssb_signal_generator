@@ -182,6 +182,147 @@ void envelope_output_init(void);
 // internally so dsp_task itself needed no changes for this feature.
 void IRAM_ATTR envelope_output_write_pwm(float delayed_envelope);
 
+// 2026-09-29: ENVELOPE_ISR_INTERP_ENABLED (envelope_interp.h) support -
+// the real, genuinely-integer fast-tick envelope write, built after the
+// ISR_PWM_FIXED_TEST_ENABLED bench probe confirmed a raw per-fast-tick
+// LEDC register write fits the timing budget. Two-function split, same
+// task-stages/ISR-applies shape as the AD9851 ISR-write path
+// (carrier_output.h) and the same reasoning: float math (the envelope-to-
+// duty conversion and the per-step delta) only ever happens in
+// envelope_output_isr_stage_step(), called from dsp_task (TASK context,
+// float/coprocessor use is safe there) once per full tick; the actual
+// per-fast-tick register write is envelope_output_isr_fasttick_step()
+// (IRAM_ATTR, integer-only, no driver calls, no float) called directly
+// from on_timer_alarm() on EVERY fast tick.
+//
+// Fixed-point: internally, both functions work in "Q4" units (RSET_MOD_
+// LEDC_RES-bit duty count, left-shifted 4 bits) purely for SOFTWARE
+// accumulation precision across many fast-tick steps - see envelope_
+// output_write_pwm()'s max_duty for the same base unit without the shift.
+//
+// *** 2026-09-30 SUPERSEDED: the paragraph below (and the ">>4 to native"
+// change it describes) was WRONG - real-hardware 'b' readout showed
+// ledc_get_duty() reading back accum/16, i.e. duty.duty DOES carry 4
+// fractional bits and the original Q4 write was correct. The write is
+// restored to the Q4 value; see envelope_output.cpp's SECOND CORRECTION. ***
+// 2026-09-30 CORRECTION: this comment originally claimed the <<4 also
+// matched "the hardware's own fractional sub-duty resolution," i.e. that
+// the raw `duty.duty` register itself wanted the value pre-shifted left by
+// 4. Real hardware proved that wrong, not just unverified: with normal
+// (non-duty-override) envelope content, the PWM output was reported
+// "stuck at max env level" for anything above roughly 1/16 of full scale -
+// exactly what happens when a value bigger than the native 0..1023 range
+// is written into a comparator that only counts across that native range
+// for this configured resolution/rate. The now-confirmed-correct 'd'
+// duty-override path writes plain native-range values via ledc_set_duty()
+// with NO shift. envelope_output_isr_fasttick_step() now converts its Q4
+// accumulator back down to native units (>>4, rounded) at the point of
+// writing to hardware - see that function's own dated comment in the .cpp
+// for the full story. The Q4 representation itself stays useful (it's
+// what lets envelope_output_isr_stage_step() spread a fractional-native-
+// unit-sized per-tick delta across ENVELOPE_INTERP_FACTOR ticks without
+// losing it to integer truncation every single tick) - only the
+// assumption about what the HARDWARE register wants was wrong. Staging a
+// PER-TICK STEP (not a target) and always computing that step relative to
+// the LAST STAGED TARGET (not by reading back wherever the ISR's own
+// running accumulator actually landed) keeps this a clean one-directional
+// task-to-ISR handoff, same as the AD9851 path's own staging - no ISR-to-
+// task feedback needed.
+//
+// 2026-09-30 SECOND CORRECTION: the paragraph that used to sit here
+// claimed this "does NOT accumulate long-term error" because each step is
+// computed fresh against the last true target every tick. That was wrong,
+// not just optimistic - real hardware showed normal (non-override)
+// two-tone content pinned very low even with offset/scale confirmed sane,
+// and working through the algebra found why: with NO carry, whenever two
+// consecutive targets differ by less than ENVELOPE_INTERP_FACTOR counts
+// (routine for real, smoothly-varying content, not an edge case), integer
+// division truncates the step to exactly zero and the difference is
+// simply thrown away forever - it can never be recovered on a later tick,
+// because every tick's step is computed only against the immediately
+// preceding target, never against how far the accumulator has actually
+// drifted. The resulting error is an unbounded random walk, not a bounded
+// wobble. Fixed by carrying the integer-division remainder forward into
+// the next tick's numerator (`s_isr_interp_carry_q4`, standard Bresenham/
+// DDA-style error diffusion - see the .cpp for the implementation) so no
+// fractional part is ever permanently lost. WITH that carry, the "at most
+// (ENVELOPE_INTERP_FACTOR-1)-count wobble between full-tick boundaries,
+// exact AT each boundary" property is actually true; without it, it
+// wasn't. Not yet bench-verified against a scope that this fix is
+// complete - flagged the same way envelope_output_start_hw_fade()'s own
+// approximate rounding is flagged below.
+//
+// Call once per full tick from TASK context (dsp_task, via
+// envelope_interp_on_full_tick() - see envelope_interp.cpp). `envelope`
+// is the plain [0,1] envelope value, same units every other envelope_
+// output_* function in this header takes.
+void envelope_output_isr_stage_step(float envelope);
+
+// IRAM_ATTR, integer-only, no driver calls, no float - see
+// envelope_output_isr_stage_step()'s own comment above for the overall
+// design. Call on EVERY fast tick (every gptimer alarm, not just full
+// ticks) from on_timer_alarm() (ssb_mic_test.ino) - adds whatever step
+// envelope_output_isr_stage_step() last staged to a running Q4 fixed-point
+// accumulator, clamps it defensively to the valid duty range, converts
+// back down to plain native duty units (>>4, rounded - see the 2026-09-30
+// correction above), and writes the result straight to the LEDC duty
+// register via raw peripheral struct access (soc/ledc_struct.h) - NOT
+// ledc_set_duty()/ledc_update_duty(),
+// which are confirmed NOT ISR-safe (see envelope_output_write_pwm()'s own
+// comment and envelope_interp.h's v1/v2 history). Includes the
+// conf0.low_speed_update commit trigger found necessary during the
+// ISR_PWM_FIXED_TEST_ENABLED bench investigation (moving_forward_notes.md,
+// 2026-09-29) - ESP32-S2/S3 has no LEDC high-speed mode, so every channel
+// needs that second commit step beyond conf1.duty_start before a written
+// duty value actually latches. Same field-name-uncertainty caveat as that
+// earlier diagnostic: reasoned from general ESP32/S2/S3 LEDC knowledge,
+// not verified against this project's exact installed SDK version.
+void IRAM_ATTR envelope_output_isr_fasttick_step(void);
+
+// 2026-09-30: diagnostic-only snapshot of the ISR-interp internal state,
+// added after three real bugs in this path (missing duty-override guard,
+// Q4->native scaling, carry-forward telescoping) were each found and
+// fixed in turn, yet real-hardware two-tone output was STILL reported
+// "the same low level" afterward on Preset 1 with duty-override confirmed
+// off - i.e. a fourth, not-yet-identified cause (or a still-incomplete
+// understanding of one of the first three) may remain. Rather than
+// guessing blind at a fifth hypothesis with no ESP-IDF toolchain to
+// compile/test locally, this exposes the actual running numbers so the
+// user can report concrete values via the new 'b' serial command
+// (serial_commands.cpp) instead of a qualitative description.
+//
+// Called from task context only (serial command handling, loop()/Core 1),
+// never from the ISR itself - same non-ISR-safety-relevant context
+// envelope_output_write_duty_raw() already runs in. Reads of the
+// individual int32_t statics are single aligned-word loads (same
+// atomicity argument as envelope_output_isr_fasttick_step()'s own
+// s_isr_interp_step_q4 read), so no lock is needed, but note this is a
+// snapshot assembled from several independent reads, not one atomic
+// transaction - the ISR can interleave between them. Fine for a
+// diagnostic print; not something to build control logic on.
+//
+// hw_duty_now is read back live via ledc_get_duty() (same call
+// envelope_output_isr_interp_reseed_from_hw() already uses) - this is
+// "ground truth," independent of anything this module's own software
+// state believes, and is the most direct way to confirm or rule out
+// whether the ISR's raw register write is actually reaching the hardware
+// at all versus dsp_task's own accum_q4/step_q4 math being wrong upstream
+// of that write.
+typedef struct {
+    float    last_envelope;    // last envelope value passed into envelope_output_isr_stage_step(), post-clamp
+    int32_t  last_target_q4;   // that value's Q4 target - staging overwrites this every full tick, so it IS this call's target, not a stale one
+    int32_t  step_q4;          // per-fast-tick step currently staged for the ISR to apply
+    int32_t  accum_q4;         // ISR's own running duty accumulator (Q4 units)
+    int32_t  carry_q4;         // carried-forward integer-division remainder (Bresenham/DDA, 2026-09-30 fix)
+    uint32_t hw_duty_now;      // ledc_get_duty() read back right now, native (0..(1<<RSET_MOD_LEDC_RES)-1) units
+    uint32_t calls_total;      // times envelope_output_isr_fasttick_step() was entered (wraps at 2^32) - should advance ~64000/s at FACTOR=4
+    uint32_t calls_past_guard; // subset of calls_total that got PAST the duty-override early-return
+    uint32_t override_on;      // s_duty_override_enabled right now (1 = ON = ISR write locked out)
+    uint32_t ledc_freq_hz;     // ledc_get_freq() - the LEDC timer's ACTUAL frequency (requested: RSET_MOD_LEDC_FREQ_HZ); 0 if unavailable
+} envelope_output_isr_interp_debug_t;
+
+void envelope_output_isr_interp_get_debug(envelope_output_isr_interp_debug_t *out);
+
 // 2026-09-08: ENVELOPE_INTERP_USE_HW_FADE (envelope_interp.h) support -
 // starts a hardware LEDC fade from whatever duty the channel is CURRENTLY
 // at (read internally by the driver, not passed in) toward target_envelope,
