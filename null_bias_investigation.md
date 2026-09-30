@@ -5681,6 +5681,38 @@ The resampler change is documented (2026-09-20/21 entries) but no quantitative b
 
 Full detail in moving_forward_notes.md's matching entry. Not a null-bias change. Main caveat: it shifts envelope-write vs AD9851-latch relative timing by ~10us, so judge it on IMD/noise as well as timing margin. Not compiled or bench-tested.
 
+## 2026-09-30, later still: cross-reference - first bench result with the notify-before-write reorder (user: pins 4/5 stable, more margin) and 700/1700 MOD160 capture
+
+Full detail in moving_forward_notes.md's matching entry. Not a null-bias finding. Notable: +/-102.2 Hz sidebands sit on both tones (~-43 dBc) but not on the carrier line (which has +/-100.0 Hz sidebands instead) - consistent with a signal-slope-dependent error, not proof of the LEDC beat cause. Carrier measured 24999.68 Hz.
+
+## 2026-09-30, later still: cross-reference - mic-mode capture (13:12Z) analysis
+
+Full detail in moving_forward_notes.md's matching entry. Near-in IMD3 unchanged vs the 09:32Z table, far skirt 1-4 dB higher; tones steady to 0.1 dB, carrier and 100/102.2 Hz sidebands vary several dB; mic-mode noise around tones is ~30 dB above the electronic two-tone case. Not a null-bias finding.
+
+## 2026-09-30, later still: cross-reference - 'V'/'b' readings after the notify-before-write reorder
+
+Full detail in moving_forward_notes.md's matching entry. max_gap_us 69-70 -> 65-66, max_busy_us 41 -> 39, overruns/late 0; driver prep+spi = 11us matches the write budget. Also found: `write_us` is dsp_task's tail phase, not the AD9851 write (label in diagnostics is stale). Not a null-bias finding.
+
+## 2026-09-30, later still: cross-reference - stale write_us / ad9851 breakdown label fixed in diagnostics.cpp/.h
+
+Full detail in moving_forward_notes.md's matching entry. Diagnostics text only; not compiled.
+
+## 2026-09-30, later still: cross-reference - race/ordering audit of the notify-before-write reorder; ISR accumulator is open-loop (possible persistent duty offset), earlier 'b' readout re-read
+
+Full detail in moving_forward_notes.md's matching entry. No data-overlap hazard from the reorder; envelope ramp now arrives one fast tick (15.6us) earlier vs the AD9851 latch (estimate); the ISR-interp accumulator has no feedback to its target, and one earlier 'b' snapshot (accum 846 vs target 23) is consistent with a persistent offset (unproven). Relevant to null-region behaviour. No code changed.
+
+## 2026-09-30, later still: cross-reference - closed-loop ISR-interp stage step and staging-error monitor implemented
+
+Full detail in moving_forward_notes.md's matching entry. Targets the possible persistent duty offset near the envelope null (relevant to null-region noise). Not compiled or bench-tested; 'b' now prints the staging-error statistics.
+
+## 2026-09-30, later still: cross-reference - first readout of the closed-loop stage step: 1 staging slip (|e|=820 q4) in ~2.46M stages, idle offset gone
+
+Full detail in moving_forward_notes.md's matching entry. Loop behaves as designed; the one event's size matches the earlier 823 q4 idle offset (suggestive only). No code changed this turn.
+
+## 2026-09-30, later still: cross-reference - 'r' now clears the ISR-interp staging-error statistics; squelch explains envelope = 0
+
+Full detail in moving_forward_notes.md's matching entry. Not compiled or bench-tested.
+
 ## Where to resume
 
 The null-crossing bias itself is well-characterized and, per the "likely

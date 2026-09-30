@@ -58,6 +58,12 @@ void IRAM_ATTR diagnostics_record_tick_start(int64_t t_start_us);
 // Called once per dsp_task tick, after computing this tick's phase
 // timings (adc_us/dsp_us/write_us/busy_us) - updates the four running
 // high-water marks and overrun_count.
+// NOTE (2026-09-30): write_us is dsp_task's TAIL phase (after the DSP:
+// tx_freq computation, diagnostics, staging stores, DAC submit). With
+// AD9851_ISR_WRITE_ENABLED the AD9851 bit-bang runs in the gptimer ISR and
+// is NOT part of it; it used to be, which is where the older name comes from.
+// adc_us covers the top-of-tick work including the task-side envelope/PWM
+// write (envelope_interp_on_full_tick()) as well as the ADC read.
 void IRAM_ATTR diagnostics_record_phase_timings(uint32_t adc_us, uint32_t dsp_us,
                                                  uint32_t write_us, uint32_t busy_us);
 

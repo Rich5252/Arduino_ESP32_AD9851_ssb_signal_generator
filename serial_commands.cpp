@@ -1164,6 +1164,22 @@ void handle_serial_commands(void)
                           (long)dbg.carry_q4,
                           (unsigned long)dbg.hw_duty_now,
                           envelope_output_get_pwm_offset(), envelope_output_get_pwm_scale());
+            // 2026-09-30: staging-error monitor (closed-loop stage step) -
+            // see envelope_output_isr_interp_debug_t. e = accum at stage
+            // minus previous staged target; |e| <= FACTOR-1 is just
+            // rounding, anything larger means the previous step was applied
+            // a different number of times than nominal (a timing slip).
+            // Since boot or the last 'r' (diagnostics reset clears it);
+            // excludes the first stage after boot/reseed/reset and every
+            // stage while duty-override is ON.
+            serial_reply("-> ISR-interp staging error (accum at stage - previous target, q4): last=%ld  "
+                          "max|e|=%ld  events(|e|>%d)=%lu of %lu measured stages  "
+                          "(rounding alone allows |e|<=%d)\r\n",
+                          (long)dbg2.stage_err_q4, (long)dbg2.stage_err_max_abs_q4,
+                          (int)(ENVELOPE_INTERP_FACTOR - 1),
+                          (unsigned long)dbg2.stage_err_events,
+                          (unsigned long)dbg2.stage_err_samples,
+                          (int)(ENVELOPE_INTERP_FACTOR - 1));
 #else
             serial_reply("-> ISR-interp debug: unavailable - PWM_COMPARISON_ENABLED && "
                           "ENVELOPE_ISR_INTERP_ENABLED is not 1 in this build (config.h/"

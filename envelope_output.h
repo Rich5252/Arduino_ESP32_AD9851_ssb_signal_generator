@@ -223,11 +223,12 @@ void IRAM_ATTR envelope_output_write_pwm(float delayed_envelope);
 // unit-sized per-tick delta across ENVELOPE_INTERP_FACTOR ticks without
 // losing it to integer truncation every single tick) - only the
 // assumption about what the HARDWARE register wants was wrong. Staging a
-// PER-TICK STEP (not a target) and always computing that step relative to
-// the LAST STAGED TARGET (not by reading back wherever the ISR's own
-// running accumulator actually landed) keeps this a clean one-directional
-// task-to-ISR handoff, same as the AD9851 path's own staging - no ISR-to-
-// task feedback needed.
+// PER-TICK STEP (not a target) keeps the ISR side integer-only.
+// [SUPERSEDED 2026-09-30, see THIRD CORRECTION below: this paragraph used
+// to say the step is always computed relative to the LAST STAGED TARGET, NOT
+// by reading back the ISR's own accumulator, keeping the handoff purely
+// one-directional. That was the open-loop design and it is why a timing slip
+// could leave a permanent duty error.]
 //
 // 2026-09-30 SECOND CORRECTION: the paragraph that used to sit here
 // claimed this "does NOT accumulate long-term error" because each step is
@@ -251,6 +252,20 @@ void IRAM_ATTR envelope_output_write_pwm(float delayed_envelope);
 // wasn't. Not yet bench-verified against a scope that this fix is
 // complete - flagged the same way envelope_output_start_hw_fade()'s own
 // approximate rounding is flagged below.
+//
+// 2026-09-30 THIRD CORRECTION (closed loop): the step is now computed from
+// where the ISR's accumulator ACTUALLY is - step = (target - accum)/FACTOR -
+// instead of from the difference between consecutive targets. The old
+// open-loop form assumed every staged step is applied exactly FACTOR times;
+// any deviation (staging landing across a 64 kHz fast-tick boundary, a
+// coalesced/overrun dsp_task tick) left a permanent error that later steps
+// never corrected. Now such an error is removed within one period. The
+// price is one task-side read of the ISR-owned accumulator (single aligned
+// 32-bit volatile load; a one-fast-tick-stale read costs one step of
+// transient error that the next stage corrects). The carry variable is now
+// informational only (see carry_q4 below). Not bench-verified. A staging-
+// error monitor (stage_err_* below, printed by 'b') counts how often the
+// previous step was NOT applied the nominal number of times.
 //
 // Call once per full tick from TASK context (dsp_task, via
 // envelope_interp_on_full_tick() - see envelope_interp.cpp). `envelope`
@@ -313,15 +328,35 @@ typedef struct {
     int32_t  last_target_q4;   // that value's Q4 target - staging overwrites this every full tick, so it IS this call's target, not a stale one
     int32_t  step_q4;          // per-fast-tick step currently staged for the ISR to apply
     int32_t  accum_q4;         // ISR's own running duty accumulator (Q4 units)
-    int32_t  carry_q4;         // carried-forward integer-division remainder (Bresenham/DDA, 2026-09-30 fix)
+    int32_t  carry_q4;         // INFORMATIONAL since the closed-loop change: remainder (target - accum) - step*FACTOR at the last stage (was the Bresenham carry)
     uint32_t hw_duty_now;      // ledc_get_duty() read back right now, native (0..(1<<RSET_MOD_LEDC_RES)-1) units
     uint32_t calls_total;      // times envelope_output_isr_fasttick_step() was entered (wraps at 2^32) - should advance ~64000/s at FACTOR=4
     uint32_t calls_past_guard; // subset of calls_total that got PAST the duty-override early-return
     uint32_t override_on;      // s_duty_override_enabled right now (1 = ON = ISR write locked out)
     uint32_t ledc_freq_hz;     // ledc_get_freq() - the LEDC timer's ACTUAL frequency (requested: RSET_MOD_LEDC_FREQ_HZ); 0 if unavailable
+    // Staging-error monitor (2026-09-30). At each dsp_task stage,
+    // e = (ISR accumulator now) - (previous staged target). If the previous
+    // step was applied exactly ENVELOPE_INTERP_FACTOR times, |e| <=
+    // FACTOR-1 (integer-division remainder only). Larger |e| = the previous
+    // step was applied a different number of times (timing slip); it is now
+    // corrected by the closed-loop step, and counted here. Excludes the
+    // first stage after boot / after an override-exit reseed / all stages
+    // while duty-override is ON. Since boot or the last 'r'; not reset by
+    // 'V' or 'b'.
+    int32_t  stage_err_q4;         // most recent e
+    int32_t  stage_err_max_abs_q4; // max |e| since boot
+    uint32_t stage_err_events;     // stages with |e| > FACTOR-1
+    uint32_t stage_err_samples;    // stages measured
 } envelope_output_isr_interp_debug_t;
 
 void envelope_output_isr_interp_get_debug(envelope_output_isr_interp_debug_t *out);
+
+// 2026-09-30: clears the stage_err_* statistics above. Called from
+// diagnostics_reset() (the 'r' command). Safe to call from task context at
+// any time; a stat update racing the reset can leave one value out by one
+// event (diagnostic only). Always-safe no-op when ENVELOPE_ISR_INTERP_ENABLED
+// is off.
+void envelope_output_isr_interp_reset_stage_err_stats(void);
 
 // 2026-09-08: ENVELOPE_INTERP_USE_HW_FADE (envelope_interp.h) support -
 // starts a hardware LEDC fade from whatever duty the channel is CURRENTLY

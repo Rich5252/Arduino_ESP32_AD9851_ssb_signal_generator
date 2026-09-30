@@ -1813,6 +1813,10 @@ static uint32_t s_last_rate_print_ms = 0;
 
 void diagnostics_reset(void)
 {
+    // 2026-09-30: also clear the ISR-interp staging-error statistics (see
+    // envelope_output.h) so a clean window can be measured after start-up.
+    // No-op stand-in when ENVELOPE_ISR_INTERP_ENABLED is off.
+    envelope_output_isr_interp_reset_stage_err_stats();
     s_dbg_max_busy_us = 0;
     s_dbg_overrun_count = 0;
     s_dbg_max_adc_us = 0;
@@ -2486,19 +2490,38 @@ static void print_timing_and_adc_block(uint32_t now)
     // was structurally the most likely one to lose that race and get
     // silently dropped every cycle (see [diag] skip_total= below to
     // confirm lines are being skipped at all) - not a compile-time or
-    // hardware gap, just starved for buffer priority. Splits the
-    // [timing] line's write_us (dominated by the AD9851 SPI write) into
-    // CPU-side prep (FTW math + bit-reversal loop) vs. the
-    // spi_device_polling_transmit()/bit-bang-loop call itself - see
+    // hardware gap, just starved for buffer priority. Reports the AD9851
+    // driver's own profile: CPU-side prep (FTW math + bit-reversal loop)
+    // vs. the spi_device_polling_transmit()/bit-bang-loop call itself - see
     // ad9851_profile_t (AD9851.h) and the bus-acquire-once change in
-    // ad9851_init() this is meant to validate the effect of.
+    // ad9851_init() this was originally meant to validate the effect of.
+    //
+    // 2026-09-30 CORRECTION: this comment and the printed text used to say
+    // the [timing] line's write_us was "dominated by the AD9851 SPI write"
+    // and called the difference "remaining driver/call overhead". That was
+    // true only while the AD9851 write ran task-side. With
+    // AD9851_ISR_WRITE_ENABLED the bit-bang runs in on_timer_alarm() (Core
+    // 1), not in dsp_task, so write_us (= t_write_done_us - t_dsp_done_us in
+    // dsp_task: tx_freq computation, diagnostics_set_tx_info(), staging
+    // stores, envelope_output_submit_dac_sample(), ...) does NOT contain it
+    // and the two figures should not be subtracted. Note also that
+    // max_prep_us/max_spi_us are since-reset maxima measured inside the
+    // driver, and that with ISR_NOTIFY_BEFORE_AD9851_ENABLED the bit-bang
+    // now overlaps dsp_task's own execution on the other core.
     if (diag_room_for(150)) {
         ad9851_profile_t ad_prof;
         carrier_output_get_profile(&ad_prof);
+#if AD9851_ATTACHED && AD9851_ISR_WRITE_ENABLED
+        Serial.printf("[timing]   ad9851 breakdown (ISR-side write): prep_us=%u spi_us=%u (prep+spi=%u; "
+                      "write_us=%u above is dsp_task's tail phase, not this)\r\n",
+                      ad_prof.max_prep_us, ad_prof.max_spi_us,
+                      ad_prof.max_prep_us + ad_prof.max_spi_us, s_dbg_max_write_us);
+#else
         Serial.printf("[timing]   ad9851 breakdown: prep_us=%u spi_us=%u (prep+spi=%u vs. write_us=%u "
                       "above - gap is remaining driver/call overhead)\r\n",
                       ad_prof.max_prep_us, ad_prof.max_spi_us,
                       ad_prof.max_prep_us + ad_prof.max_spi_us, s_dbg_max_write_us);
+#endif
     }
 
     // 2026-09-10: see s_dbg_max_freq_dev_step_hz's own declaration comment

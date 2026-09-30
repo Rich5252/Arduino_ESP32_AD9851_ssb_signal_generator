@@ -326,6 +326,25 @@ static float             s_isr_interp_last_envelope = 0.0f;
 static volatile uint32_t s_isr_interp_calls_total = 0;
 static volatile uint32_t s_isr_interp_calls_past_guard = 0;
 
+// 2026-09-30: staging-error monitor for the closed-loop stage step below -
+// see envelope_output_isr_stage_step()'s THIRD CORRECTION comment. At each
+// stage, e = (ISR accumulator right now) - (the PREVIOUS staged target).
+// If the previous step was applied exactly ENVELOPE_INTERP_FACTOR times,
+// e is only the integer-division remainder of the previous stage, i.e.
+// |e| <= FACTOR-1. A larger |e| means the previous step was applied a
+// different number of times (staging landed across a fast-tick boundary, a
+// coalesced/overrun tick, ...) - exactly the event that used to leave a
+// permanent duty error. dsp_task writes these; the 'b' command (Core 1)
+// reads them: plain aligned 32-bit, diagnostic-only, so no lock.
+// s_isr_interp_stage_err_valid excludes the first stage after boot, after a
+// duty-override exit reseed, and every stage while override is ON (the ISR
+// is locked out then, so the accumulator is frozen and e is meaningless).
+static volatile int32_t  s_isr_interp_stage_err_q4 = 0;          // most recent e
+static volatile int32_t  s_isr_interp_stage_err_max_abs_q4 = 0;  // since boot: max |e|
+static volatile uint32_t s_isr_interp_stage_err_events = 0;      // since boot: stages with |e| > FACTOR-1
+static volatile uint32_t s_isr_interp_stage_err_samples = 0;     // since boot: stages that were measured
+static bool              s_isr_interp_stage_err_valid = false;
+
 void envelope_output_isr_stage_step(float envelope)
 {
     if (envelope < 0.0f) envelope = 0.0f;
@@ -372,9 +391,54 @@ void envelope_output_isr_stage_step(float envelope)
     // is what actually delivers the "telescopes exactly to the true
     // target trajectory, only a bounded wobble along the way" property in
     // reality, not just in a comment.
-    int32_t numerator = (target_q4 - s_isr_interp_last_target_q4) + s_isr_interp_carry_q4;
+    //
+    // 2026-09-30 THIRD CORRECTION - CLOSED LOOP (supersedes the
+    // Bresenham-carry numerator above; the paragraph above is kept as
+    // history of why plain truncation was wrong). Found by reading the
+    // handoff, not by a scope: the ISR accumulator was an OPEN-LOOP
+    // integrator - each staged step is supposed to be applied exactly
+    // FACTOR times, but if it is applied 3 or 5 times (dsp_task's stage
+    // lands on the other side of a 64 kHz fast-tick boundary because of
+    // wake jitter, or a tick is coalesced/overrun) the accumulator ends up
+    // off by (n-FACTOR) x step, and since every later step was computed
+    // from target-to-target differences only, that error was NEVER
+    // corrected (bounded per event, but a random walk over many events; a
+    // model simulation with an invented 0.1 % late-stage rate reached
+    // ~100 native duty counts on a 1.2 kHz tone; an earlier 'b' snapshot
+    // showed accum 846 vs target 23 at idle, consistent with, but not
+    // proof of, this). Fix: derive each step from where the accumulator
+    // ACTUALLY is - step = (target - accum_now)/FACTOR - so any error is
+    // removed within one period instead of persisting. This deliberately
+    // adds a read-back (ISR-owned accum, one aligned 32-bit volatile load)
+    // to what used to be a one-directional handoff; a read that is one
+    // fast tick stale costs at most one step of transient error which the
+    // NEXT stage corrects, it cannot accumulate. The old carry is no longer
+    // needed: the integer-division remainder is left in the accumulator's
+    // own state and is included automatically in the next (target - accum).
+    // carry_q4 is kept only as a diagnostic: it now reports that remainder.
+    // dsp_task's stage runs in the quiet window between the ISR's fast-tick
+    // writes (the ISR touches the accumulator for ~1us at the start of each
+    // 15.6us fast tick), so a torn/interleaved read is not expected.
+    const int32_t accum_now = s_isr_interp_accum_q4;
+
+    if (s_duty_override_enabled) {
+        // ISR write is locked out, accum is frozen - e would be garbage.
+        s_isr_interp_stage_err_valid = false;
+    } else {
+        if (s_isr_interp_stage_err_valid) {
+            int32_t e = accum_now - s_isr_interp_last_target_q4;
+            int32_t ae = (e < 0) ? -e : e;
+            s_isr_interp_stage_err_q4 = e;
+            if (ae > s_isr_interp_stage_err_max_abs_q4) s_isr_interp_stage_err_max_abs_q4 = ae;
+            if (ae > ((int32_t)ENVELOPE_INTERP_FACTOR - 1)) s_isr_interp_stage_err_events = s_isr_interp_stage_err_events + 1u;
+            s_isr_interp_stage_err_samples = s_isr_interp_stage_err_samples + 1u;
+        }
+        s_isr_interp_stage_err_valid = true;
+    }
+
+    int32_t numerator = target_q4 - accum_now;
     int32_t step_q4 = numerator / (int32_t)ENVELOPE_INTERP_FACTOR;
-    s_isr_interp_carry_q4 = numerator - step_q4 * (int32_t)ENVELOPE_INTERP_FACTOR;
+    s_isr_interp_carry_q4 = numerator - step_q4 * (int32_t)ENVELOPE_INTERP_FACTOR;   // diagnostic only now - see above
     s_isr_interp_last_target_q4 = target_q4;
 
     // Single aligned 32-bit store - atomic (no tearing) on this core by
@@ -506,6 +570,8 @@ static void envelope_output_isr_interp_reseed_from_hw(void)
     // stale carry from before override was entered has nothing meaningful
     // left to correct and should not be combined with it.
     s_isr_interp_carry_q4 = 0;
+    // The first stage after this jump is not a valid staging-error sample.
+    s_isr_interp_stage_err_valid = false;
 }
 
 // 2026-09-30: see envelope_output.h's own comment on this function for why
@@ -525,6 +591,28 @@ void envelope_output_isr_interp_get_debug(envelope_output_isr_interp_debug_t *ou
     out->calls_past_guard = s_isr_interp_calls_past_guard;
     out->override_on      = s_duty_override_enabled ? 1u : 0u;
     out->ledc_freq_hz     = ledc_get_freq(LEDC_LOW_SPEED_MODE, RSET_MOD_LEDC_TIMER);
+    out->stage_err_q4         = s_isr_interp_stage_err_q4;
+    out->stage_err_max_abs_q4 = s_isr_interp_stage_err_max_abs_q4;
+    out->stage_err_events     = s_isr_interp_stage_err_events;
+    out->stage_err_samples    = s_isr_interp_stage_err_samples;
+}
+
+// 2026-09-30: clears the staging-error statistics (called from
+// diagnostics_reset(), i.e. the 'r' command) so a window can be measured
+// AFTER start-up, which the user reports is when odd things happen. Also
+// clears the valid flag so the first stage after the reset is not measured
+// (no previous-stage reference to compare against is guaranteed). Plain
+// stores from Core 1 while dsp_task (Core 0) may be incrementing the same
+// counters: a lost update at the instant of the reset can leave one stale
+// value that is at most one stage / one event out - acceptable for a
+// diagnostic, and not worth a lock in a path dsp_task runs every tick.
+void envelope_output_isr_interp_reset_stage_err_stats(void)
+{
+    s_isr_interp_stage_err_valid      = false;
+    s_isr_interp_stage_err_q4         = 0;
+    s_isr_interp_stage_err_max_abs_q4 = 0;
+    s_isr_interp_stage_err_events     = 0;
+    s_isr_interp_stage_err_samples    = 0;
 }
 #else
 void envelope_output_isr_stage_step(float envelope)
@@ -549,6 +637,17 @@ void envelope_output_isr_interp_get_debug(envelope_output_isr_interp_debug_t *ou
     out->calls_past_guard = 0;
     out->override_on      = 0;
     out->ledc_freq_hz     = 0;
+    out->stage_err_q4         = 0;
+    out->stage_err_max_abs_q4 = 0;
+    out->stage_err_events     = 0;
+    out->stage_err_samples    = 0;
+}
+
+// 2026-09-30: no-op stand-in, same always-safe-to-call convention as the
+// other stand-ins in this #else block (diagnostics_reset() calls it
+// unconditionally).
+void envelope_output_isr_interp_reset_stage_err_stats(void)
+{
 }
 
 // 2026-09-30: no-op stand-in so envelope_output_duty_override_set_enabled()
